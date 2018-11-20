@@ -1,0 +1,17 @@
+# Ignore everything
+*
+
+# Except for these files
+# Re-include all directories (& sub-dirs) to find files matching the exceptions that follow
+!*/
+# The .gitignore itself
+!.gitignore
+# Python
+!*.py
+# Markdown
+!*.md
+# Shell
+!*.sh
+# License
+!LICENSE
+
