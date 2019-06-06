@@ -14,4 +14,14 @@
 !*.sh
 # License
 !LICENSE
+# MFCC/Fbank config files
+!mfcc.conf
+!fbank.conf
+# Forced Alignments
+!*.ctm
 
+# Files to ignore that were re-included in exceptions:
+# Jupyter checkpoints
+.ipynb_checkpoints
+# Ignore extracted features from TIDigits (needs to be obtained from LDC)
+extracted

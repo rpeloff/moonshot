@@ -4,7 +4,7 @@
 #
 # Author: Ryan Eloff
 # Contact: ryan.peter.eloff@gmail.com
-# Date: September 2018 (edited April 2019)
+# Date: September 2018 (updated April 2019)
 
 # source dataset paths (update paths.sh according to your storage locations)
 source data_paths.sh
@@ -52,7 +52,8 @@ source path.sh  # many scripts depend on this file being present in cwd
 # ------------------------------------------------------------------------------
 # Prepare feature data directories:
 # ------------------------------------------------------------------------------
-tidigits_feats=./extracted/$(basename ${TIDIGITS_DIR})
+# tidigits_feats=${FEATURES_DIR}/extracted/$(basename ${TIDIGITS_DIR})
+tidigits_feats=${FEATURES_DIR}/tidigits/extracted
 mkdir -p $tidigits_feats/features
 mkdir -p $tidigits_feats/logs
 
@@ -118,105 +119,104 @@ for set in train test; do
         > $tmpdir/$set/spk2utt
 done
 echo "TIDigits data preparation succeeded!"
+    
+# ------------------------------------------------------------------------------
+# Extract TIDigits MFCC features:
+# ------------------------------------------------------------------------------
+for set in train test; do
+    # Create feature and log directories
+    mkdir -p $tidigits_feats/logs/make_mfcc/$set
+    mkdir -p $tidigits_feats/logs/make_cmvn_dd/$set
+    mkdir -p $tidigits_feats/features/mfcc
+    # Get raw MFCC features
+    /tmp/kaldi/steps/make_mfcc.sh \
+        --cmd $train_cmd \
+        --mfcc-config ${FEATURES_DIR}/tidigits/conf/mfcc.conf \
+        --nj $N_CPU_CORES \
+        $tmpdir/$set \
+        $tidigits_feats/logs/make_mfcc/$set \
+        $tidigits_feats/features/mfcc
+    cat $tidigits_feats/features/mfcc/raw_mfcc_$set.*.scp \
+        > $tidigits_feats/features/mfcc/raw_mfcc_$set.scp
+    rm $tidigits_feats/features/mfcc/raw_mfcc_$set.*.scp
+    # Calc cmvn stats
+    /tmp/kaldi/steps/compute_cmvn_stats.sh \
+        $tmpdir/$set \
+        $tidigits_feats/logs/make_mfcc/$set \
+        $tidigits_feats/features/mfcc
+    # Make MFCC feature with deltas and double-deltas
+    ${FEATURES_DIR}/utils/cmvn_dd.sh \
+        --cmd $train_cmd \
+        --nj $N_CPU_CORES \
+        $tmpdir/$set \
+        $tidigits_feats/logs/make_cmvn_dd/$set \
+        $tidigits_feats/features/mfcc
+    cat $tidigits_feats/features/mfcc/mfcc_cmvn_dd_$set.*.scp \
+        > $tidigits_feats/features/mfcc/mfcc_cmvn_dd_$set.scp
+    rm $tidigits_feats/features/mfcc/mfcc_cmvn_dd_$set.*.scp
+done
 
-# TODO(rpeloff) test scripts and check ID formatting
-# # ------------------------------------------------------------------------------
-# # Extract TIDigits MFCC features:
-# # ------------------------------------------------------------------------------
-# for set in train test; do
-#     # Create feature and log directories
-#     mkdir -p $tidigits_feats/logs/make_mfcc/$set
-#     mkdir -p $tidigits_feats/logs/make_cmvn_dd/$set
-#     mkdir -p $tidigits_feats/features/mfcc
-#     # Get raw MFCC features
-#     /tmp/kaldi/steps/make_mfcc.sh \
-#         --cmd $train_cmd \
-#         --mfcc-config $tidigits_feats/conf/mfcc.conf \
-#         --nj $N_CPU_CORES \
-#         $tmpdir/$set \
-#         $tidigits_feats/logs/make_mfcc/$set \
-#         $tidigits_feats/features/mfcc
-#     cat $tidigits_feats/features/mfcc/raw_mfcc_$set.*.scp \
-#         > $tidigits_feats/features/mfcc/raw_mfcc_$set.scp
-#     rm $tidigits_feats/features/mfcc/raw_mfcc_$set.*.scp
-#     # Calc cmvn stats
-#     /tmp/kaldi/steps/compute_cmvn_stats.sh \
-#         $tmpdir/$set \
-#         $tidigits_feats/logs/make_mfcc/$set \
-#         $tidigits_feats/features/mfcc
-#     # Make MFCC feature with deltas
-#     $tidigits_feats/cmvn_dd.sh \
-#         --cmd $train_cmd \
-#         --nj $N_CPU_CORES \
-#         $tmpdir/$set \
-#         $tidigits_feats/logs/make_cmvn_dd/$set \
-#         $tidigits_feats/features/mfcc
-#     cat $tidigits_feats/features/mfcc/mfcc_cmvn_dd_$set.*.scp \
-#         > $tidigits_feats/features/mfcc/mfcc_cmvn_dd_$set.scp
-#     rm $tidigits_feats/features/mfcc/mfcc_cmvn_dd_$set.*.scp
-# done
+# ------------------------------------------------------------------------------
+# Extract TIDigits Filterbank features:
+# ------------------------------------------------------------------------------
+for set in train test; do
+    # Create feature and log directories
+    mkdir -p $tidigits_feats/logs/make_fbank/$set
+    mkdir -p $tidigits_feats/features/fbank
+    # Get Filterbank features
+    /tmp/kaldi/steps/make_fbank.sh \
+        --compress false \
+        --cmd $train_cmd \
+        --fbank-config ${FEATURES_DIR}/tidigits/conf/fbank.conf \
+        --nj $N_CPU_CORES \
+        $tmpdir/$set \
+        $tidigits_feats/logs/make_fbank/$set \
+        $tidigits_feats/features/fbank
+    cat $tidigits_feats/features/fbank/raw_fbank_$set.*.scp \
+        > $tidigits_feats/features/fbank/raw_fbank_$set.scp
+    rm $tidigits_feats/features/fbank/raw_fbank_$set.*.scp
+done
 
-# # ------------------------------------------------------------------------------
-# # Extract TIDigits Filterbank features:
-# # ------------------------------------------------------------------------------
-# for set in train test; do
-#     # Create feature and log directories
-#     mkdir -p $tidigits_feats/logs/make_fbank/$set
-#     mkdir -p $tidigits_feats/features/fbank
-#     # Get Filterbank features
-#     /tmp/kaldi/steps/make_fbank.sh \
-#         --compress false \
-#         --cmd $train_cmd \
-#         --fbank-config $tidigits_feats/conf/fbank.conf \
-#         --nj $N_CPU_CORES \
-#         $tmpdir/$set \
-#         $tidigits_feats/logs/make_fbank/$set \
-#         $tidigits_feats/features/fbank
-#     cat $tidigits_feats/features/fbank/raw_fbank_$set.*.scp \
-#         > $tidigits_feats/features/fbank/raw_fbank_$set.scp
-#     rm $tidigits_feats/features/fbank/raw_fbank_$set.*.scp
-# done
+# ------------------------------------------------------------------------------
+# Use forced alignments to separate TIDigits sequences into individual digits:
+# ------------------------------------------------------------------------------
+for set in train test; do
+    # Get locations of individual segments found by forced alignment
+    ${FEATURES_DIR}/tidigits/tidigits_segments_prep.py \
+        ${FEATURES_DIR}/tidigits/forced_align \
+        $tmpdir/$set \
+        $set
+    # Extract MFCCs for the individual digits:
+    extract-feature-segments \
+        --snip-edges=false \
+        --min-segment-length=0.0 \
+        "scp:${tidigits_feats}/features/mfcc/mfcc_cmvn_dd_${set}.scp" \
+        $tmpdir/$set/segments_indiv \
+        "ark,scp:${tidigits_feats}/features/mfcc/mfcc_cmvn_dd_${set}_indiv.ark,${tidigits_feats}/features/mfcc/mfcc_cmvn_dd_${set}_indiv.scp"
+    extract-feature-segments \
+        --snip-edges=false \
+        --min-segment-length=0.0 \
+        "scp:${tidigits_feats}/features/fbank/raw_fbank_${set}.scp" \
+        $tmpdir/$set/segments_indiv \
+        "ark,scp:${tidigits_feats}/features/fbank/raw_fbank_${set}_indiv.ark,${tidigits_feats}/features/fbank/raw_fbank_${set}_indiv.scp"
+done
 
-# # ------------------------------------------------------------------------------
-# # Use forced alignments to separate TIDigits sequences into individual digits:
-# # ------------------------------------------------------------------------------
-# for set in train test; do
-#     # Get locations of individual segments found by forced alignment
-#     $tidigits_feats/tidigits_segments_prep.py \
-#         $tidigits_feats/forced_align \
-#         $tmpdir/$set \
-#         $set
-#     # Extract MFCCs for the individual digits:
-#     extract-feature-segments \
-#         --snip-edges=false \
-#         --min-segment-length=0.0 \
-#         "scp:${tidigits_feats}/features/mfcc/mfcc_cmvn_dd_${set}.scp" \
-#         $tmpdir/$set/segments_indiv \
-#         "ark,scp:${tidigits_feats}/features/mfcc/mfcc_cmvn_dd_${set}_indiv.ark,${tidigits_feats}/features/mfcc/mfcc_cmvn_dd_${set}_indiv.scp"
-#     extract-feature-segments \
-#         --snip-edges=false \
-#         --min-segment-length=0.0 \
-#         "scp:${tidigits_feats}/features/fbank/raw_fbank_${set}.scp" \
-#         $tmpdir/$set/segments_indiv \
-#         "ark,scp:${tidigits_feats}/features/fbank/raw_fbank_${set}_indiv.ark,${tidigits_feats}/features/fbank/raw_fbank_${set}_indiv.scp"
-# done
-
-# # ------------------------------------------------------------------------------
-# # Convert the TIDigits Kaldi features to NumPy arrays:
-# # ------------------------------------------------------------------------------
-# for set in train test; do
-#     $tidigits_feats/kaldi_to_numpy.py \
-#         $tidigits_feats/features/mfcc/mfcc_cmvn_dd_${set}_indiv.scp \
-#         $tidigits_feats/features/mfcc/mfcc_cmvn_dd_${set}_indiv.npz
-#     $tidigits_feats/kaldi_to_numpy.py \
-#         $tidigits_feats/features/fbank/raw_fbank_${set}_indiv.scp \
-#         $tidigits_feats/features/fbank/raw_fbank_${set}_indiv.npz
-# done
+# ------------------------------------------------------------------------------
+# Convert the TIDigits Kaldi features to NumPy arrays:
+# ------------------------------------------------------------------------------
+for set in train test; do
+    ${FEATURES_DIR}/utils/kaldi_to_numpy.py \
+        $tidigits_feats/features/mfcc/mfcc_cmvn_dd_${set}_indiv.scp \
+        $tidigits_feats/features/mfcc/mfcc_cmvn_dd_${set}_indiv.npz
+    ${FEATURES_DIR}/utils/kaldi_to_numpy.py \
+        $tidigits_feats/features/fbank/raw_fbank_${set}_indiv.scp \
+        $tidigits_feats/features/fbank/raw_fbank_${set}_indiv.npz
+done
 
 # # ------------------------------------------------------------------------------
 # # Combine TIDigits features into single numpy archive for easy retrieval:
 # # ------------------------------------------------------------------------------
-# $tidigits_feats/combine_archives.py \
+# ${FEATURES_DIR}/utils/combine_archives.py \
 #     --mfcc-train=$tidigits_feats/features/mfcc/mfcc_cmvn_dd_train_indiv.npz \
 #     --mfcc-test=$tidigits_feats/features/mfcc/mfcc_cmvn_dd_test_indiv.npz \
 #     --fbank-train=$tidigits_feats/features/fbank/raw_fbank_train_indiv.npz \
