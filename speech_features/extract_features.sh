@@ -207,10 +207,10 @@ done
 for set in train test; do
     ${FEATURES_DIR}/utils/kaldi_to_numpy.py \
         $tidigits_feats/features/mfcc/mfcc_cmvn_dd_${set}_indiv.scp \
-        $tidigits_feats/features/mfcc/mfcc_cmvn_dd_${set}_indiv.npz
+        $tidigits_feats/features/mfcc/${set}.npz
     ${FEATURES_DIR}/utils/kaldi_to_numpy.py \
         $tidigits_feats/features/fbank/raw_fbank_${set}_indiv.scp \
-        $tidigits_feats/features/fbank/raw_fbank_${set}_indiv.npz
+        $tidigits_feats/features/fbank/${set}.npz
 done
 
 # # ------------------------------------------------------------------------------

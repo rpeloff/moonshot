@@ -20,5 +20,4 @@ run-docker-env -c "./extract_features.sh" \
     --data-dir ${FLICKR_AUDIO_DIR} \
     --data-dir ${FLICKR_TEXT_DIR} \
     --image reloff/kaldi:5.4 \
-    --sudo \
-    --bash
+    --sudo

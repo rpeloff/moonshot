@@ -1,2 +1,9 @@
-# TODO(rpeloff) update and fix!
-~/projects/research_images/run_docker_env.sh --data-dir ~/datasets --jupyter-port 8888 --vs-port 8444 --jupyter-password sotw-dp-Jupyter5658 --vs-password sotw-dp-VSCode5658 -e ~/.vscode/extensions -p 6006
+# run-docker-env -c "./exp_setup.sh" \
+run-docker-env \
+    --env N_CPU_CORES=${N_CPU_CORES} \
+    --env FEATURES_DIR="/research" \
+    --data-dir "speech_features" \
+    --image reloff/ml-research:tf-2.0.0a0-py36-cuda100 \
+    --jupyter lab \
+    --jupyter-port 8888 \
+    --sudo
