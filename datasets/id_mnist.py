@@ -11,6 +11,7 @@ from __future__ import division
 from __future__ import print_function
 
 
+import os
 import hashlib
 import numpy as np
 from tensorflow.keras.datasets import mnist
@@ -31,33 +32,41 @@ def load_id_mnist():
     """
     # load mnist with keras datasets
     train, test = mnist.load_data(path="mnist.npz")
-
     # sanity check we are hashing the actual data
     assert bytes(train[0][0].reshape(-1).tolist()) == train[0][0].tostring()
     assert hashlib.md5(train[0][0].tostring()).hexdigest() == hashlib.md5(train[0][0].data).hexdigest()
-
     # create function to map data and label to unique hash ID
-    id_hash = lambda x_data, y_label: "{}_{}".format(y_label, hashlib.md5(x_data.tostring()).hexdigest()[:10])
-
+    id_hash = lambda x_data, y_label: "{}".format(hashlib.md5(x_data.tostring()).hexdigest()[:10])
     # create unique MNIST IDs
     train_ids = np.asarray(list(map(id_hash, train[0], train[1])))
     test_ids = np.asarray(list(map(id_hash, test[0], test[1])))
-
     # return as (train, test) where each set contains (ids, data, labels)
     return ((train_ids, ) + train,
             (test_ids, ) + test)
 
 
-def write_id_mnist_arch(outfile="id_mnist.npz"):
+def write_id_mnist_arch(output_dir="data"):
     """Write MNIST dataset with unique IDs to compressed NumPy archive."""
     train, test = load_id_mnist()
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     np.savez_compressed(
-        outfile,
+        os.path.join(output_dir, "id_mnist.npz"),
         id_train=train[0], x_train=train[1], y_train=train[2],
         id_test=test[0], x_test=test[1], y_test=test[2])
 
 
+def read_id_mnist_arch(path="id_mnist.npz"):
+    """Read MNIST dataset with unique IDs from NumPy archive."""
+    mnist_npz = np.load(path)
+    train = mnist_npz["id_train"], mnist_npz["x_train"], mnist_npz["y_train"]
+    test = mnist_npz["id_test"], mnist_npz["x_test"], mnist_npz["y_test"]
+    return train, test
+
+
 if __name__ == "__main__":
     train, test = load_id_mnist()
-    assert train[0][0] == "5_2ce86e4dae"
-    assert test[0][0] == "7_1081cd3611"
+    assert train[0][0] == "2ce86e4dae"
+    assert test[0][0] == "1081cd3611"
+    assert len(train[0]) == 60000
+    assert len(test[0]) == 10000

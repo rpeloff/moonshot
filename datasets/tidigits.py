@@ -6,7 +6,6 @@ Date: June 2019
 """
 
 
-
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
@@ -22,7 +21,6 @@ def extract_tidigits(feats_dir):
     # load tidigits mfcc or filterbank archives (specified by feats_dir)
     train = np.load(os.path.join(feats_dir, "train.npz"))
     test = np.load(os.path.join(feats_dir, "test.npz"))
-
     # function to extract data and metadata
     def extract_data(dataset):
         ids, data, labels, speakers, src_seqs, productions, fa_frames = [], [], [], [], [], [], []
@@ -40,10 +38,17 @@ def extract_tidigits(feats_dir):
             np.asarray(ids), np.asarray(data), np.asarray(labels),
             np.asarray(speakers), np.asarray(src_seqs),
             np.asarray(productions), np.asarray(fa_frames))
-
     # extract train and test data
     train_extracted = extract_data(train)
     test_extracted = extract_data(test)
-
     # return as (train, test) where each set contains (ids, data, labels, speakers, src_seqs, productions, fa_frames)
     return train_extracted, test_extracted
+
+
+if __name__ == "__main__":
+    train, test = extract_tidigits(
+        os.path.join("speech_features", "tidigits", "extracted", "features", "mfcc"))
+    assert train[0][0] == "o_mr_o3o5351a_a_000017-000045"
+    assert test[0][0] == "3_ct_9443a_a_000139-000192"
+    assert len(train[0]) == 28329
+    assert len(test[0]) == 28583
