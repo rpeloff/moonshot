@@ -19,9 +19,13 @@
 !fbank.conf
 # Forced Alignments
 !*.ctm
+# Jupyter notebooks
+!*.ipynb
 
 # Files to ignore that were re-included in exceptions:
 # Jupyter checkpoints
 .ipynb_checkpoints
 # Ignore extracted features from TIDigits (needs to be obtained from LDC)
 extracted
+# Ignore Flickr Audio data (for now ...)
+flickr_audio

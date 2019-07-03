@@ -92,13 +92,14 @@ def write_mnist_tidigits_csv(
     tidigits_val_uids = tidigits_val[0][mnist_tidigits_val[1]]
     mnist_test_uids = mnist_test[0][mnist_tidigits_test[0]]
     tidigits_test_uids = tidigits_test[0][mnist_tidigits_test[1]]
-    # map tidigits ID to include paired mnist ID
-    def paired_mnist_tidigits_id(mnist_uid, tidigits_uid):
-        label, speaker, src_seq, production, fa_frames = tidigits_uid.split("_")
-        return "{}_{}_{}_{}_{}_{}".format(label, speaker, src_seq, mnist_uid, production, fa_frames)
-    paired_tidigits_train_uids = np.asarray(list(map(paired_mnist_tidigits_id, mnist_train_uids, tidigits_train_uids)))
-    paired_tidigits_val_uids = np.asarray(list(map(paired_mnist_tidigits_id, mnist_val_uids, tidigits_val_uids)))
-    paired_tidigits_test_uids = np.asarray(list(map(paired_mnist_tidigits_id, mnist_test_uids, tidigits_test_uids)))
+    # TODO(rpeloff) remove
+    # # map tidigits ID to include paired mnist ID
+    # def paired_mnist_tidigits_id(mnist_uid, tidigits_uid):
+    #     label, speaker, src_seq, production, fa_frames = tidigits_uid.split("_")
+    #     return "{}_{}_{}_{}_{}_{}".format(label, speaker, src_seq, mnist_uid, production, fa_frames)
+    # paired_tidigits_train_uids = np.asarray(list(map(paired_mnist_tidigits_id, mnist_train_uids, tidigits_train_uids)))
+    # paired_tidigits_val_uids = np.asarray(list(map(paired_mnist_tidigits_id, mnist_val_uids, tidigits_val_uids)))
+    # paired_tidigits_test_uids = np.asarray(list(map(paired_mnist_tidigits_id, mnist_test_uids, tidigits_test_uids)))
     # write multimodal pair IDs data to csv
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -107,19 +108,19 @@ def write_mnist_tidigits_csv(
         csv_writer.writerow(["mnist_id", "tidigits_id"])
         csv_writer.writerows(zip(
             mnist_train_uids,
-            paired_tidigits_train_uids))
+            tidigits_train_uids))
     with open(os.path.join(output_dir, "val.csv"), "w", newline="") as csvfile:
         csv_writer = csv.writer(csvfile, delimiter=",")
         csv_writer.writerow(["mnist_id", "tidigits_id"])
         csv_writer.writerows(zip(
             mnist_val_uids,
-            paired_tidigits_val_uids))
+            tidigits_val_uids))
     with open(os.path.join(output_dir, "test.csv"), "w", newline="") as csvfile:
         csv_writer = csv.writer(csvfile, delimiter=",")
         csv_writer.writerow(["mnist_id", "tidigits_id"])
         csv_writer.writerows(zip(
             mnist_test_uids,
-            paired_tidigits_test_uids))
+            tidigits_test_uids))
 
 
 def read_mnist_tidigits_csv(path="data/mnist_tidigits/train.csv"):
