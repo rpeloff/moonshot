@@ -123,6 +123,9 @@ def sample_episode(uids, labels, speakers=None,
 				valid_speakers_idx = np.where(speakers == episode_speakers[cls_idx])[0]
 				query_valid_idx = np.intersect1d(query_valid_idx, valid_speakers_idx)
 				query_cls_idx = np.random.choice(len(query_valid_idx), size=num_cls_queries, replace=False)
+			else:  # same valid indices as used for support set
+				query_valid_idx = np.intersect1d(valid_idx, query_valid_idx)
+				query_cls_idx = np.random.choice(len(query_valid_idx), size=num_cls_queries, replace=False)	
 		else:
 			query_cls_idx = np.random.choice(len(query_valid_idx), size=num_cls_queries, replace=False)
 		# collect dataset indices selected for support and query sets
@@ -145,7 +148,10 @@ def sample_episode(uids, labels, speakers=None,
 def generate_episodes(uids, labels, speakers=None, n_episodes=600,
 					  n_queries=15, k_shot=1, l_way=5, shuffle=True,
 					  speaker_mode="baseline"):
-	"""Generator function for sampling  K-shot L-way episode support and query set."""
+	"""Generator function for sampling  K-shot L-way episode support and query set.
+	
+	See `sample_episode` for parameters.
+	"""
 	for _ in range(n_episodes):
 		yield sample_episode(
 			uids, labels, speakers=speakers,
@@ -160,7 +166,10 @@ def sample_multimodal_episode(paired_image_uids, paired_image_labels,
 							  n_queries=15, k_shot=1, l_way=5, shuffle=True,
 							  strict_one_shot_matching=False,
 							  speaker_mode="baseline"):
-	"""Sample episode of K-shot L-way multimodal support set, N query speech, and L-way (1-shot) image matching set."""
+	"""Sample episode of K-shot L-way multimodal support set, N query speech, and L-way (1-shot) image matching set.
+	
+	See `sample_episode` for information on `speaker_mode`.
+	"""
 	# copy labels and uids and create shuffle indices (so that first instance of duplicate uids is different to previous episodes)
 	assert len(paired_image_uids) == len(paired_speech_uids)  # loosely check that these are "paired"
 	paired_image_uids = np.asarray(paired_image_uids).copy()
@@ -201,38 +210,85 @@ def sample_multimodal_episode(paired_image_uids, paired_image_labels,
 			episode_speakers = unique_speakers[np.random.choice(len(unique_speakers), size=l_way, replace=False)]
 	# sample support, query and matching set
 	support_paired_idx, query_speech_idx, matching_image_idx = [], [], []
+	speaker_exclusion, query_speaker_exclusion = [], []
 	for cls_idx, (image_cls, speech_cls) in enumerate(episode_cls):
 		# set initial valid indices from which to sample as the shuffled indices
 		valid_idx = permute_idx
-		# get indices where paired dataset labels match the current paired class labels
-		image_label_cls_idx = np.where(paired_image_labels[permute_idx] == image_cls)[0]
-		speech_label_cls_idx = np.where(paired_speech_labels[permute_idx] == speech_cls)[0]
+		# get indices where paired dataset labels match the current paired class labels and cut valid indices
+		image_label_cls_idx = np.where(paired_image_labels == image_cls)[0]
+		speech_label_cls_idx = np.where(paired_speech_labels == speech_cls)[0]
 		paired_label_cls_idx = np.intersect1d(image_label_cls_idx, speech_label_cls_idx)
-		# get indices where paired query labels match the current paired class labels
+		valid_idx = np.intersect1d(valid_idx, paired_label_cls_idx)
+		# get number of paired query labels which match the current paired class labels
 		image_query_cls_idx = np.where(query_cls[:, 0] == image_cls)[0]
 		speech_query_cls_idx = np.where(query_cls[:, 1] == speech_cls)[0]
 		paired_query_cls_idx = np.intersect1d(image_query_cls_idx, speech_query_cls_idx)
-		# get indices where paired matching labels match the current paired class labels
+		num_cls_queries = len(paired_query_cls_idx)
+		# get number of paired matching labels which match the current paired class labels
 		image_match_cls_idx = np.where(matching_cls[:, 0] == image_cls)[0]
 		speech_match_cls_idx = np.where(matching_cls[:, 1] == speech_cls)[0]
 		paired_match_cls_idx = np.intersect1d(image_match_cls_idx, speech_match_cls_idx)
-		# get indices of unique paired uids (removing possible repetitions) which correspond to the current paired class labels
-		image_uids_unique_cls_idx = np.unique(paired_image_uids[permute_idx][paired_label_cls_idx], return_index=True)[1]
-		speech_uids_unique_cls_idx = np.unique(paired_speech_uids[permute_idx][paired_label_cls_idx], return_index=True)[1]
+		num_cls_matching = len(paired_match_cls_idx)
+		# get indices of unique paired uids (removing possible repetitions) and cut valid indices
+		image_uids_unique_cls_idx = np.unique(paired_image_uids, return_index=True)[1]
+		speech_uids_unique_cls_idx = np.unique(paired_speech_uids, return_index=True)[1]
 		paired_uids_unique_cls_idx = np.intersect1d(image_uids_unique_cls_idx, speech_uids_unique_cls_idx)
-		# choose K support indices + size(paired query labels == paired class) query indices + one or zero matching index
-		episode_cls_idx = np.random.choice(len(paired_uids_unique_cls_idx), size=(k_shot + len(paired_query_cls_idx) + len(paired_match_cls_idx)), replace=False)
-		# add dataset indices of shuffled paired labels with unique uids that have been selected for support, query and matching sets
-		support_paired_idx.extend(permute_idx[paired_label_cls_idx[paired_uids_unique_cls_idx][episode_cls_idx[:k_shot]]])
-		if len(paired_match_cls_idx) > 0:  # add single matching index
-			query_speech_idx.extend(permute_idx[paired_label_cls_idx[paired_uids_unique_cls_idx][episode_cls_idx[k_shot:-1]]])
-			matching_image_idx.extend(permute_idx[paired_label_cls_idx[paired_uids_unique_cls_idx][episode_cls_idx[-1:]]])
+		valid_idx = np.intersect1d(valid_idx, paired_uids_unique_cls_idx)
+		# store copy of current valid indices for query sampling before optional updating with speaker information
+		query_valid_idx = valid_idx.copy()
+		# get indices of valid speakers according to speaker mode and cut valid indices
+		if speakers is not None:
+			if speaker_mode == "baseline":  # do nothing (i.e. no rules bro)
+				pass
+			elif speaker_mode == "easy":  # use same speaker throughout for the current class 
+				unique_speakers_idx = np.where(np.equal(np.isin(
+					unique_speakers, speaker_exclusion), False))[0]
+				easy_speaker = unique_speakers[unique_speakers_idx][np.random.choice(len(unique_speakers_idx), size=1, replace=False)[0]]
+				speaker_exclusion.append(easy_speaker)
+				speaker_cls_idx = np.where(speakers == easy_speaker)[0]
+				valid_idx = np.intersect1d(valid_idx, speaker_cls_idx)
+			elif speaker_mode == "hard":  # query and support set speakers are disjoint
+				valid_speakers_idx = np.where(np.equal(np.isin(
+					speakers, speaker_exclusion), False))[0]
+				valid_idx = np.intersect1d(valid_idx, valid_speakers_idx)
+			elif speaker_mode == "distractor":  # use previous class episode speaker for support set "distractors"
+				valid_speakers_idx = np.where(speakers == episode_speakers[cls_idx-1])[0]
+				valid_idx = np.intersect1d(valid_idx, valid_speakers_idx)
+			else:
+				raise NotImplementedError("Speaker mode not implemented: {}".format(speaker_mode))
+		# choose K support set indices
+		support_cls_idx = np.random.choice(len(valid_idx), size=k_shot, replace=False)
+		# exclude chosen support set indices from valid query indices
+		query_valid_idx = np.setdiff1d(query_valid_idx, valid_idx[support_cls_idx])
+		# choose size(query labels == class) query indices with optional speaker information
+		if speakers is not None:
+			if speaker_mode == "hard":  # query and support set speakers are disjoint
+				query_speaker_exclusion.extend(speakers[valid_idx[support_cls_idx]])
+				valid_speakers_idx = np.where(np.equal(np.isin(
+					speakers, query_speaker_exclusion), False))[0]
+				query_valid_idx = np.intersect1d(query_valid_idx, valid_speakers_idx)
+				query_cls_idx = np.random.choice(len(query_valid_idx), size=(num_cls_queries + num_cls_matching), replace=False)
+				speaker_exclusion.extend(speakers[query_valid_idx[query_cls_idx]])
+			elif speaker_mode == "distractor":  # use current class episode speaker for queries
+				valid_speakers_idx = np.where(speakers == episode_speakers[cls_idx])[0]
+				query_valid_idx = np.intersect1d(query_valid_idx, valid_speakers_idx)
+				query_cls_idx = np.random.choice(len(query_valid_idx), size=(num_cls_queries + num_cls_matching), replace=False)
+			else:  # same valid indices as used for support set
+				query_valid_idx = np.intersect1d(valid_idx, query_valid_idx)
+				query_cls_idx = np.random.choice(len(query_valid_idx), size=(num_cls_queries + num_cls_matching), replace=False)	
+		else:
+			query_cls_idx = np.random.choice(len(query_valid_idx), size=(num_cls_queries + num_cls_matching), replace=False)
+		# collect dataset indices selected for support, query and matching sets
+		support_paired_idx.extend(valid_idx[support_cls_idx])
+		if num_cls_matching > 0:  # add single matching index
+			query_speech_idx.extend(query_valid_idx[query_cls_idx[:-1]])
+			matching_image_idx.extend(query_valid_idx[query_cls_idx[-1:]])
 		else:  # no matching index (duplicate label removed for strict one-shot matching)
-			query_speech_idx.extend(permute_idx[paired_label_cls_idx[paired_uids_unique_cls_idx][episode_cls_idx[k_shot:]]])
+			query_speech_idx.extend(query_valid_idx[query_cls_idx])
+	# shuffle final support, query and matching set indices if specified
 	support_paired_idx = np.asarray(support_paired_idx)
 	query_speech_idx = np.asarray(query_speech_idx)
 	matching_image_idx = np.asarray(matching_image_idx)
-	# shuffle support, query and matching set indices if specified
 	if shuffle:
 		support_paired_idx = np.random.permutation(support_paired_idx)
 		query_speech_idx = np.random.permutation(query_speech_idx)
@@ -254,7 +310,10 @@ def generate_multimodal_episodes(paired_image_uids, paired_image_labels,
 								 n_episodes=600, n_queries=15, k_shot=1, l_way=5,
 								 shuffle=True, strict_one_shot_matching=False,
 								 speaker_mode="baseline"):
-	"""Generator function for sampling multimodal K-shot L-way episode support, query and matching set."""
+	"""Generator function for sampling multimodal K-shot L-way episode support, query and matching set.
+	
+	See `sample_multimodal_episode` for parameters.
+	"""
 	for _ in range(n_episodes):
 		yield sample_multimodal_episode(
 			paired_image_uids, paired_image_labels,
