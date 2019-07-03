@@ -21,11 +21,13 @@
 !*.ctm
 # Jupyter notebooks
 !*.ipynb
+# Datasets
+!data/**
 
 # Files to ignore that were re-included in exceptions:
 # Jupyter checkpoints
 .ipynb_checkpoints
 # Ignore extracted features from TIDigits (needs to be obtained from LDC)
 extracted
-# Ignore Flickr Audio data (for now ...)
+# Ignore Flickr Audio src (for now ...)
 flickr_audio
