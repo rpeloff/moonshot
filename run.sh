@@ -4,6 +4,7 @@ run-docker-env \
     --env FEATURES_DIR="/research" \
     --data-dir "speech_features" \
     --image reloff/ml-research:tf-2.0.0-beta1-py36-cuda100 \
+    --nvidia-gpu \
     --jupyter lab \
     --jupyter-port 8888 \
     --sudo
