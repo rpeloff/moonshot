@@ -31,3 +31,5 @@
 extracted
 # Ignore Flickr Audio src (for now ...)
 flickr_audio
+# Ignore extracted episode data
+data/episodes/unimodal/*/**
