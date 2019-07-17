@@ -15,6 +15,13 @@ import os
 import numpy as np
 
 
+# define class names
+class_names = ["o", "z", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+
+# get class label lookup
+class_labels = {label: idx for idx, label in enumerate(class_names)}
+
+
 def extract_tidigits(feats_dir):
     """Load TIDigits speech features (MFCC or Filterbank) and extract metadata.
     """
