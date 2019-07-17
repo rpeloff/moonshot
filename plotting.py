@@ -19,6 +19,7 @@ from collections.abc import Iterable
 
 
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import numpy as np
 
 
@@ -32,6 +33,11 @@ def save_fig(fig_id, path="figures", tight_layout=True, fig_extension="png", res
     plt.savefig(fig_path, format=fig_extension, dpi=resolution)
 
 
+def transpose_variable_array(variable_arr):
+    tranpose_array = lambda arr: np.transpose(arr, axes=[1, 0])
+    return list(map(tranpose_array, variable_arr))
+
+
 def plot_support_set(support_set_data, support_set_labels, k_shot, l_way, speakers=None, fig_id="support_set", cmap="binary", origin="lower"):
     # get max x and y length for axis sharing (on length basis)
     max_y, max_x = 0., 0.
@@ -42,7 +48,7 @@ def plot_support_set(support_set_data, support_set_labels, k_shot, l_way, speake
     # calc number of rows and cols and plot images
     n_rows = k_shot
     n_cols = l_way
-    plt.figure(figsize=(n_cols * 1.2, n_rows * 1.2))
+    plt.figure(figsize=(n_cols * 1.3, n_rows * 1.3))
     for col in range(n_cols):
         for row in range(n_rows):
             plt_index = n_cols * row + col
@@ -66,7 +72,8 @@ def plot_support_set(support_set_data, support_set_labels, k_shot, l_way, speake
             except IndexError:
                 plt.axis("off")
     plt.subplots_adjust(wspace=0.2, hspace=0.5)
-    save_fig(fig_id, tight_layout=False)
+    if fig_id is not None:
+        save_fig(fig_id, tight_layout=False)
     plt.show()
 
 
@@ -80,7 +87,7 @@ def plot_query_set(query_set_data, query_set_labels, n_queries, speakers=None, m
     # calc number of rows and cols and plot images
     n_rows = int(np.ceil(n_queries / max_cols))
     n_cols = min(n_queries, max_cols)
-    plt.figure(figsize=(n_cols * 1.2, n_rows * 1.2))
+    plt.figure(figsize=(n_cols * 1.3, n_rows * 1.3))
     for row in range(n_rows):
         for col in range(n_cols):
             img_index = n_cols * row + col
@@ -105,7 +112,8 @@ def plot_query_set(query_set_data, query_set_labels, n_queries, speakers=None, m
             except IndexError:
                 plt.axis("off")
     plt.subplots_adjust(wspace=0.2, hspace=0.5)
-    save_fig(fig_id, tight_layout=False)
+    if fig_id is not None:
+        save_fig(fig_id, tight_layout=False)
     plt.show()
 
 
@@ -123,7 +131,7 @@ def plot_multimodal_support_set(image_support_set_data, image_support_set_labels
     # calc number of rows and cols and plot images
     n_rows = k_shot
     n_cols = l_way
-    plt.figure(figsize=(n_cols * 1.2 * 2, n_rows * 1.2))
+    plt.figure(figsize=(n_cols * 1.3 * 2, n_rows * 1.3))
     for col in range(n_cols):
         for row in range(n_rows):
             plt_index = n_cols * row + col
@@ -151,10 +159,67 @@ def plot_multimodal_support_set(image_support_set_data, image_support_set_labels
             except IndexError:
                 plt.axis("off")
     plt.subplots_adjust(wspace=0.2, hspace=0.5)
-    save_fig(fig_id, tight_layout=False)
+    if fig_id is not None:
+        save_fig(fig_id, tight_layout=False)
     plt.show()
 
 
-def transpose_variable_array(variable_arr):
-    tranpose_array = lambda arr: np.transpose(arr, axes=[1, 0])
-    return list(map(tranpose_array, variable_arr))
+def plot_predictions(support_set_data, support_set_labels, query_predict_idx, query_distances,
+                     k_shot, l_way, speakers=None, fig_id="predictions", cmap="binary", origin="lower"):
+    # get max x and y length for axis sharing (on length basis)
+    max_y, max_x = 0., 0.
+    for query in support_set_data:
+        query_shape = np.shape(query)
+        max_y = max(query_shape[0], max_y)
+        max_x = max(query_shape[1], max_x)
+    # get top-5 closest distance indices
+    top_5_idx = np.argsort(query_distances)[:5]
+    # calc number of rows and cols and plot images
+    n_rows = k_shot
+    n_cols = l_way
+    plt.figure(figsize=(n_cols * 1.8, n_rows * 1.7))
+    for col in range(n_cols):
+        for row in range(n_rows):
+            plt_index = n_cols * row + col
+            img_index = n_rows * col + row
+            try:
+                plt.subplot(n_rows, n_cols, plt_index + 1)
+                axs = plt.gca()
+                plt.imshow(support_set_data[img_index], cmap=cmap, interpolation="nearest", origin="upper")
+                title = str(support_set_labels[img_index])
+                if speakers is not None:
+                    title += " ({})".format(speakers[img_index])
+                plt.title(title, fontsize=12)
+                axs.set_xlabel("cost: {:.4f}".format(query_distances[img_index]))
+                # hide axes but keep x-label
+                axs.yaxis.set_visible(False)  # set y-axis invisible
+                plt.setp(axs.spines.values(), visible=False)  # make spines (the box) invisible
+                axs.tick_params(bottom=False, labelbottom=False)  # remove ticks and labels for y-axis
+                axs.patch.set_visible(False)  # remove background patch if non-white background
+                # center plot with same x- and y-axis length across examples
+                y_len, x_len = np.shape(support_set_data[img_index])
+                axs.set_xlim(round(-(max_x - x_len)/2), x_len + round((max_x - x_len)/2))
+                if origin == "lower":
+                    axs.set_ylim(round(-(max_y- y_len)/2), y_len + round((max_y - y_len)/2))
+                else:
+                    axs.set_ylim(y_len + round((max_y - y_len)/2), round(-(max_y- y_len)/2))
+                # create a patch to show predictions
+                if img_index in top_5_idx:
+                    rect = patches.Rectangle(
+                        (0, 0), x_len, y_len,
+                        linewidth=5, edgecolor="g", facecolor="none")
+                    axs.add_patch(rect)
+                    plt.title(title, fontsize=12, fontweight="bold", color="g")
+                if img_index in query_predict_idx:
+                    rect = patches.Rectangle(
+                        (0, 0), x_len, y_len,
+                        linewidth=5, edgecolor="r", facecolor="none")
+                    axs.add_patch(rect)
+                    plt.title(title, fontsize=12, fontweight="bold", color="r")
+
+            except IndexError:
+                plt.axis("off")
+    plt.subplots_adjust(wspace=0.2, hspace=0.5)
+    if fig_id is not None:
+        save_fig(fig_id, tight_layout=False)
+    plt.show()

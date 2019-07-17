@@ -11,6 +11,12 @@ from __future__ import division
 from __future__ import print_function
 
 
+import os
+import csv
+import json
+import shutil
+
+
 import numpy as np
 
 
@@ -46,12 +52,16 @@ def sample_episode(uids, labels, speakers=None,
 	    e.g. classes [1,2,3,4,5], speakers [a,b,...,z]
 	    sample query speakers {1->a, 2->b, 3->c, 4->d, 5->e}
 	    sample support speakers {1->b, 2->c, 3->d, 4->e, 5->a]}
+	- "hard_distractor":
+	    e.g. classes [1,2,3,4,5], speakers [a,b,...,z]
+	    sample query speakers {4->e, 4->e, 4->e, 4->e, 4->e}
+	    sample support speakers {1->e, 2->e, 3->e, 4->a, 5->e]}
 
 	Speaker mode hypothesis
 	- DTW model:
-	    easy > baseline > hard > distractor
+	    easy > baseline > hard > distractor >> hard_distractor
 	- Neural models:
-	    baseline == easy == hard == distractor
+	    baseline == easy == hard == distractor >= hard_distractor
 	"""
 	# copy labels and uids and create shuffle indices (so that first instance of duplicate uids is different to previous episodes)
 	uids = np.asarray(uids).copy()
@@ -70,6 +80,10 @@ def sample_episode(uids, labels, speakers=None,
 		# sample L unique speaker uids for the episode classes if using "distractor" speaker mode
 		if speaker_mode == "distractor":
 			episode_speakers = unique_speakers[np.random.choice(len(unique_speakers), size=l_way, replace=False)]
+		# sample one query label repeated N times and sample one speaker as the epsiode query & distractor speaker
+		elif speaker_mode == "hard_distractor":
+			query_cls = episode_cls[np.random.choice(len(episode_cls), size=1, replace=True).repeat(n_queries)]
+			episode_speakers = unique_speakers[np.random.choice(len(unique_speakers), size=1, replace=False)]
     # sample support and query set
 	support_idx, query_idx = [], []
 	speaker_exclusion, query_speaker_exclusion = [], []
@@ -104,6 +118,12 @@ def sample_episode(uids, labels, speakers=None,
 			elif speaker_mode == "distractor":  # use previous class episode speaker for support set "distractors"
 				valid_speakers_idx = np.where(speakers == episode_speakers[cls_idx-1])[0]
 				valid_idx = np.intersect1d(valid_idx, valid_speakers_idx)
+			elif speaker_mode == "hard_distractor":  # support uses distractor speaker except when matching the query class
+				if cls == query_cls[0]:
+					valid_speakers_idx = np.where(speakers != episode_speakers[0])[0]
+				else:
+					valid_speakers_idx = np.where(speakers == episode_speakers[0])[0]
+				valid_idx = np.intersect1d(valid_idx, valid_speakers_idx)
 			else:
 				raise NotImplementedError("Speaker mode not implemented: {}".format(speaker_mode))
 		# choose K support set indices
@@ -121,6 +141,10 @@ def sample_episode(uids, labels, speakers=None,
 				speaker_exclusion.extend(speakers[query_valid_idx[query_cls_idx]])
 			elif speaker_mode == "distractor":  # use current class episode speaker for queries
 				valid_speakers_idx = np.where(speakers == episode_speakers[cls_idx])[0]
+				query_valid_idx = np.intersect1d(query_valid_idx, valid_speakers_idx)
+				query_cls_idx = np.random.choice(len(query_valid_idx), size=num_cls_queries, replace=False)
+			elif speaker_mode == "hard_distractor":  # always use query speaker
+				valid_speakers_idx = np.where(speakers == episode_speakers[0])[0]
 				query_valid_idx = np.intersect1d(query_valid_idx, valid_speakers_idx)
 				query_cls_idx = np.random.choice(len(query_valid_idx), size=num_cls_queries, replace=False)
 			else:  # same valid indices as used for support set
@@ -141,6 +165,8 @@ def sample_episode(uids, labels, speakers=None,
 	assert np.array_equal(sorted(uids[support_idx]), np.unique(uids[support_idx]))
 	assert np.array_equal(sorted(uids[query_idx]), np.unique(uids[query_idx]))
 	assert np.count_nonzero(np.isin(uids[query_idx], uids[support_idx])) == 0
+	assert len(support_idx) == l_way * k_shot
+	assert len(query_idx) == n_queries
 	# return support and query set indices
 	return support_idx, query_idx
 
@@ -152,11 +178,68 @@ def generate_episodes(uids, labels, speakers=None, n_episodes=600,
 	
 	See `sample_episode` for parameters.
 	"""
+	# sample and yield episodes
 	for _ in range(n_episodes):
 		yield sample_episode(
 			uids, labels, speakers=speakers,
 			n_queries=n_queries, k_shot=k_shot, l_way=l_way, shuffle=shuffle,
 			speaker_mode=speaker_mode)
+
+
+def write_episodes_folder(episode_generator, output_dir="data/episodes/unimodal",
+						  zip_folder=True):
+	"""Write episodes indices to a structured folder of csv files."""
+	if os.path.exists(output_dir):
+		raise ValueError("Episodes folder already exists: {}".format(output_dir))
+	else:
+		os.makedirs(output_dir)
+	# store generator parameters
+	ep_gen_params = episode_generator.gi_frame.f_locals
+	del ep_gen_params["uids"], ep_gen_params["labels"], ep_gen_params["speakers"]
+	print("Writing episodes folder using generator with attributes: {}".format(ep_gen_params))
+	with open(os.path.join(output_dir, "episodes_params.json"), "w") as file:
+		file.write(json.dumps(ep_gen_params, indent=4))
+	# write episodes folders
+	for n_episode, (support_idx, query_idx) in enumerate(episode_generator):
+		episode_dir = os.path.join(output_dir, str(n_episode))
+		os.makedirs(episode_dir)
+		with open(os.path.join(episode_dir, "support.csv"), "w", newline="") as csvfile:
+			csv_writer = csv.writer(csvfile, delimiter=",")
+			csv_writer.writerow(["index"])
+			csv_writer.writerows(np.expand_dims(support_idx, axis=1))
+		with open(os.path.join(episode_dir, "query.csv"), "w", newline="") as csvfile:
+			csv_writer = csv.writer(csvfile, delimiter=",")
+			csv_writer.writerow(["index"])
+			csv_writer.writerows(np.expand_dims(query_idx, axis=1))
+	if zip_folder:  # optionally zip the episodes folder
+		shutil.make_archive(output_dir, "zip", output_dir)
+
+
+def read_episodes_folder(path="data/episodes/unimodal"):
+	"""Read episodes indices from structured folder of csv files."""
+	episode_dirs = [name for name in os.listdir(path)
+					if os.path.isdir(os.path.join(path, name))]
+	episode_dirs.sort(key=lambda ep_dir: int(ep_dir))
+	assert os.path.exists(os.path.join(path, episode_dirs[0], "support.csv"))
+	with open(os.path.join(path, "episodes_params.json"), "r") as file:
+		episodes_params = json.load(file)
+	print("Reading episodes folder with attributes: {}".format(episodes_params))
+	support_indices, query_indices = [], []
+	for episode_dir in episode_dirs:
+		episode_dir = os.path.join(path, episode_dir)
+		with open(os.path.join(episode_dir, "support.csv"), "r", newline="") as csvfile:
+			csv_reader = csv.DictReader(csvfile)
+			support_idx = []
+			for row in csv_reader:
+				support_idx.append(int(row["index"]))
+			support_indices.append(np.array(support_idx))
+		with open(os.path.join(episode_dir, "query.csv"), "r", newline="") as csvfile:
+			csv_reader = csv.DictReader(csvfile)
+			query_idx = []
+			for row in csv_reader:
+				query_idx.append(int(row["index"]))
+			query_indices.append(np.array(query_idx))
+	return episodes_params, list(zip(support_indices, query_indices))
 
 
 def sample_multimodal_episode(paired_image_uids, paired_image_labels,
@@ -201,6 +284,7 @@ def sample_multimodal_episode(paired_image_uids, paired_image_labels,
 	if strict_one_shot_matching:  # remove duplicate image labels among the matching label pairs
 		matching_unique_cls_idx = np.unique(matching_cls[:, 0], return_index=True)[1]
 		matching_cls = matching_cls[matching_unique_cls_idx]
+	_n_matching = len(matching_cls)
 	# copy speakers and get unique speaker ids if speakers specified
 	if speakers is not None:
 		speakers = np.asarray(speakers).copy()
@@ -208,6 +292,11 @@ def sample_multimodal_episode(paired_image_uids, paired_image_labels,
 		# sample L unique speaker uids for the episode classes if using "distractor" speaker mode
 		if speaker_mode == "distractor":
 			episode_speakers = unique_speakers[np.random.choice(len(unique_speakers), size=l_way, replace=False)]
+		# sample one query label repeated N times and sample one speaker as the epsiode query & distractor speaker
+		elif speaker_mode == "hard_distractor":
+			query_cls = episode_cls[np.random.choice(len(episode_cls), size=1, replace=True).repeat(n_queries)]
+			print(query_cls)
+			episode_speakers = unique_speakers[np.random.choice(len(unique_speakers), size=1, replace=False)]
 	# sample support, query and matching set
 	support_paired_idx, query_speech_idx, matching_image_idx = [], [], []
 	speaker_exclusion, query_speaker_exclusion = [], []
@@ -254,6 +343,13 @@ def sample_multimodal_episode(paired_image_uids, paired_image_labels,
 			elif speaker_mode == "distractor":  # use previous class episode speaker for support set "distractors"
 				valid_speakers_idx = np.where(speakers == episode_speakers[cls_idx-1])[0]
 				valid_idx = np.intersect1d(valid_idx, valid_speakers_idx)
+			elif speaker_mode == "hard_distractor":  # support uses distractor speaker except when matching the query class
+				print(query_cls[0, 1])
+				if speech_cls == query_cls[0, 1]:
+					valid_speakers_idx = np.where(speakers != episode_speakers[0])[0]
+				else:
+					valid_speakers_idx = np.where(speakers == episode_speakers[0])[0]
+				valid_idx = np.intersect1d(valid_idx, valid_speakers_idx)
 			else:
 				raise NotImplementedError("Speaker mode not implemented: {}".format(speaker_mode))
 		# choose K support set indices
@@ -271,6 +367,10 @@ def sample_multimodal_episode(paired_image_uids, paired_image_labels,
 				speaker_exclusion.extend(speakers[query_valid_idx[query_cls_idx]])
 			elif speaker_mode == "distractor":  # use current class episode speaker for queries
 				valid_speakers_idx = np.where(speakers == episode_speakers[cls_idx])[0]
+				query_valid_idx = np.intersect1d(query_valid_idx, valid_speakers_idx)
+				query_cls_idx = np.random.choice(len(query_valid_idx), size=(num_cls_queries + num_cls_matching), replace=False)
+			elif speaker_mode == "hard_distractor":  # always use query speaker
+				valid_speakers_idx = np.where(speakers == episode_speakers[0])[0]
 				query_valid_idx = np.intersect1d(query_valid_idx, valid_speakers_idx)
 				query_cls_idx = np.random.choice(len(query_valid_idx), size=(num_cls_queries + num_cls_matching), replace=False)
 			else:  # same valid indices as used for support set
@@ -300,6 +400,9 @@ def sample_multimodal_episode(paired_image_uids, paired_image_labels,
 	assert np.array_equal(sorted(paired_speech_uids[matching_image_idx]), np.unique(paired_speech_uids[matching_image_idx]))
 	assert np.count_nonzero(np.isin(paired_image_uids[query_speech_idx], paired_image_uids[support_paired_idx])) == 0
 	assert np.count_nonzero(np.isin(paired_speech_uids[matching_image_idx], paired_speech_uids[support_paired_idx])) == 0
+	assert len(support_paired_idx) == l_way * k_shot
+	assert len(query_speech_idx) == n_queries
+	assert len(matching_image_idx) == _n_matching
 	# return paired support set, speech query set and image matching set indices
 	return support_paired_idx, query_speech_idx, matching_image_idx
 
@@ -322,3 +425,30 @@ def generate_multimodal_episodes(paired_image_uids, paired_image_labels,
 			n_queries=n_queries, k_shot=k_shot, l_way=l_way, shuffle=shuffle,
 			strict_one_shot_matching=strict_one_shot_matching,
 			speaker_mode=speaker_mode)
+
+
+def write_multimodal_episodes_folder(episode_generator,
+									 output_dir="data/episodes/multimodal",
+						  			 zip_folder=True):
+	"""Write multimodal episodes indices to a structured folder of csv files."""
+	if os.path.exists(output_dir):
+		raise ValueError("Episodes folder already exists: {}".format(output_dir))
+	else:
+		os.makedirs(output_dir)
+	for n_episode, (support_idx, query_idx, matching_idx) in enumerate(episode_generator):
+		episode_dir = os.path.join(output_dir, str(n_episode))
+		os.makedirs(episode_dir)
+		with open(os.path.join(episode_dir, "support.csv"), "w", newline="") as csvfile:
+			csv_writer = csv.writer(csvfile, delimiter=",")
+			csv_writer.writerow(["image_speech_index"])
+			csv_writer.writerows(np.expand_dims(support_idx, axis=1))
+		with open(os.path.join(episode_dir, "query.csv"), "w", newline="") as csvfile:
+			csv_writer = csv.writer(csvfile, delimiter=",")
+			csv_writer.writerow(["speech_index"])
+			csv_writer.writerows(np.expand_dims(query_idx, axis=1))
+		with open(os.path.join(episode_dir, "matching.csv"), "w", newline="") as csvfile:
+			csv_writer = csv.writer(csvfile, delimiter=",")
+			csv_writer.writerow(["image_index"])
+			csv_writer.writerows(np.expand_dims(matching_idx, axis=1))
+	if zip_folder:
+		shutil.make_archive(output_dir, "zip", output_dir)
