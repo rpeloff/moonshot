@@ -17,6 +17,7 @@ Test performance with timeit:
     python  -m timeit \
         -s "import fast_dtw as dtw" \
         -s "X_a, X_b = dtw._test_data_matrix()" \
+        -s "dtw.dtw_cdist(X_a, X_b, 'cosine')  # compile" \
         "dtw.dtw_cdist(X_a, X_b, 'cosine')"
 ```
 
@@ -26,7 +27,7 @@ Test performance with timeit:
     python  -m timeit \
         -s "import fast_dtw as dtw" \
         -s "x_a, x_b = dtw._test_data_vector()" \
-        -s "cost_mat = dtw.dtw_dist_cosine(x_a, x_b)" \
+        -s "cost_mat = dtw.dtw_dist_cosine(x_a, x_b)  # compile" \
         -s "print('cost value:', dtw.get_final_cost(cost_mat))" \
         -s "print('cost path:', dtw.get_cost_path(cost_mat))" \
         "dtw.dtw_dist_cosine(x_a, x_b)"

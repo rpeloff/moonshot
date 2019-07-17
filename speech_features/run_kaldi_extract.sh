@@ -16,7 +16,6 @@ run-docker-env -c "./extract_features.sh" \
     --env N_CPU_CORES=${N_CPU_CORES} \
     --env FEATURES_DIR="/research" \
     --data-dir ${TIDIGITS_DIR} \
-    --data-dir ${FLICKR_IMAGE_DIR} \
     --data-dir ${FLICKR_AUDIO_DIR} \
     --data-dir ${FLICKR_TEXT_DIR} \
     --image reloff/kaldi:5.4 \

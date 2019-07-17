@@ -29,7 +29,5 @@
 .ipynb_checkpoints
 # Ignore extracted features from TIDigits (needs to be obtained from LDC)
 extracted
-# Ignore Flickr Audio src (for now ...)
-flickr_audio
 # Ignore extracted episode data
 data/episodes/unimodal/*/**

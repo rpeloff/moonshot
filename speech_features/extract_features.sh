@@ -17,8 +17,6 @@ apt-get update -y \
     && python -m pip install --upgrade setuptools wheel \
     && python -m pip install \
         numpy==1.15.0 \
-        pillow==5.3.0 \
-        matplotlib==2.2.3 \
         nltk==3.3.0
 python -c "import nltk; nltk.download('stopwords')"
 
@@ -72,7 +70,7 @@ mkdir -p $tmpdir/local/data
 # Make sure that tidigits data exists in container at <tidigits basename>/tidigits
 rootdir=/data/$(basename ${TIDIGITS_DIR})/tidigits  # set tidigits root data directory
 if ! [ -d $rootdir ]; then 
-    echo "Tidigits directory does not have expected format: ${rootdir}"
+    echo "TIDIGITS directory does not have expected format: ${rootdir}"
     exit 1  
 fi
 
@@ -118,7 +116,7 @@ for set in train test; do
         < $tmpdir/$set/utt2spk \
         > $tmpdir/$set/spk2utt
 done
-echo "TIDigits data preparation succeeded!"
+echo "TIDIGITS data preparation succeeded!"
     
 # ------------------------------------------------------------------------------
 # Extract TIDigits MFCC features:
@@ -213,12 +211,122 @@ for set in train test; do
         $tidigits_feats/features/fbank/${set}.npz
 done
 
-# # ------------------------------------------------------------------------------
-# # Combine TIDigits features into single numpy archive for easy retrieval:
-# # ------------------------------------------------------------------------------
-# ${FEATURES_DIR}/utils/combine_archives.py \
-#     --mfcc-train=$tidigits_feats/features/mfcc/mfcc_cmvn_dd_train_indiv.npz \
-#     --mfcc-test=$tidigits_feats/features/mfcc/mfcc_cmvn_dd_test_indiv.npz \
-#     --fbank-train=$tidigits_feats/features/fbank/raw_fbank_train_indiv.npz \
-#     --fbank-test=$tidigits_feats/features/fbank/raw_fbank_test_indiv.npz \
-#     --out-file $tidigits_feats/tidigits_audio.npz
+echo "TIDIGITS data extraction complete"
+echo ""
+
+# ==============================================================================
+#                                  FLICKR AUDIO
+# ------------------------------------------------------------------------------
+# Prepare feature data directories:
+# ------------------------------------------------------------------------------
+fa_feats=$FEATURES_DIR/flickr_audio/extracted
+mkdir -p $fa_feats/features
+mkdir -p $fa_feats/logs
+
+# ------------------------------------------------------------------------------
+# Prepare Flickr-Audio in the format required for Kaldi feature extraction:
+# ------------------------------------------------------------------------------
+# Create flickr-audio temporary data directories
+tmpdir=/tmp/kaldi/flickr_audio
+mkdir -p $tmpdir/train
+mkdir -p $tmpdir/test
+mkdir -p $tmpdir/local/data
+
+# Make sure that flickr-audio data exists in container at <flickr_audio_basename>
+rootdir=/data/$(basename ${FLICKR_AUDIO_DIR})  # set flickr-audio root data directory
+if ! [ -d $rootdir ]; then 
+    echo "Flickr-Audio directory does not have expected format: ${rootdir}"
+    exit 1
+fi
+
+# Prepare flickr-audio data
+${FEATURES_DIR}/flickr_audio/flickr8k_data_prep_vad.py \
+    $rootdir \
+    $tmpdir/local/data
+
+# Print duration of the complete corpus
+cat $tmpdir/local/data/segments \
+    | awk 'BEGIN {sum = 0.0} {sum += $4 - $3} \
+           END {printf "Total duration: %.6f hours\n", sum/60.0/60.0}'
+echo "Flickr-Audio data preparation succeeded!"
+
+# ------------------------------------------------------------------------------
+# Extract Flickr-Audio MFCC features for each spoken utterance as a whole:
+# ------------------------------------------------------------------------------
+# Create feature and log directories
+mkdir -p $fa_feats/logs/make_mfcc/full_vad
+mkdir -p $fa_feats/logs/make_cmvn_dd/full_vad
+mkdir -p $fa_feats/features/mfcc
+# Get raw MFCC features
+/tmp/kaldi/steps/make_mfcc.sh \
+    --cmd $train_cmd \
+    --mfcc-config ${FEATURES_DIR}/flickr_audio/conf/mfcc.conf \
+    --nj $N_CPU_CORES \
+    $tmpdir/local/data \
+    $fa_feats/logs/make_mfcc/full_vad \
+    $fa_feats/features/mfcc
+# Calc cmvn stats
+/tmp/kaldi/steps/compute_cmvn_stats.sh \
+    $tmpdir/local/data \
+    $fa_feats/logs/make_mfcc/full_vad \
+    $fa_feats/features/mfcc
+# Make MFCC feature with deltas
+${FEATURES_DIR}/utils/cmvn_dd.sh \
+    --cmd $train_cmd \
+    --nj $N_CPU_CORES \
+    $tmpdir/local/data \
+    $fa_feats/logs/make_cmvn_dd/full_vad \
+    $fa_feats/features/mfcc
+cat $fa_feats/features/mfcc/mfcc_cmvn_dd_data.*.scp \
+    > $fa_feats/features/mfcc/mfcc_cmvn_dd_full_vad.scp
+rm $fa_feats/features/mfcc/mfcc_cmvn_dd_data.*.scp
+
+# ------------------------------------------------------------------------------
+# Extract Flickr-Audio Filterbank features for each spoken utterance as a whole:
+# ------------------------------------------------------------------------------
+# Create feature and log directories
+mkdir -p $fa_feats/logs/make_fbank/$set
+mkdir -p $fa_feats/features/fbank
+# Get Filterbank features
+/tmp/kaldi/steps/make_fbank.sh \
+    --compress false \
+    --cmd $train_cmd \
+    --fbank-config ${FEATURES_DIR}/flickr_audio/conf/fbank.conf \
+    --nj $N_CPU_CORES \
+    $tmpdir/local/data \
+    $fa_feats/logs/make_fbank/full_vad \
+    $fa_feats/features/fbank
+cat $fa_feats/features/fbank/raw_fbank_data.*.scp \
+    > $fa_feats/features/fbank/raw_fbank_full_vad.scp
+rm $fa_feats/features/fbank/raw_fbank_data.*.scp
+
+# ------------------------------------------------------------------------------
+# Convert to NumPy archives with train-test-dev splits of Flickr-8k-Text corpus:
+# ------------------------------------------------------------------------------
+${FEATURES_DIR}/flickr_audio/get_kaldi_fbank.py \
+    /data/$(basename ${FLICKR_TEXT_DIR}) \
+    $fa_feats/features/fbank \
+    raw_fbank_full_vad.scp
+${FEATURES_DIR}/flickr_audio/get_kaldi_mfcc.py \
+    /data/$(basename ${FLICKR_TEXT_DIR}) \
+    $fa_feats/features/mfcc \
+    mfcc_cmvn_dd_full_vad.scp
+
+# ------------------------------------------------------------------------------
+# Split each subset into isolated words:
+# ------------------------------------------------------------------------------
+for set in dev train test; do
+    ${FEATURES_DIR}/flickr_audio/get_iso_words.py \
+        $rootdir \
+        $fa_feats/features \
+        mfcc \
+        $set
+    ${FEATURES_DIR}/flickr_audio/get_iso_words.py \
+        $rootdir \
+        $fa_feats/features \
+        fbank \
+        $set
+done
+
+echo "Flickr-Audio data extraction complete"
+echo ""
