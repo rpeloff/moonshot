@@ -14,6 +14,8 @@
 !*.sh
 # License
 !LICENSE
+# Makefile
+!Makefile
 # MFCC/Fbank config files
 !mfcc.conf
 !fbank.conf
@@ -22,12 +24,19 @@
 # Jupyter notebooks
 !*.ipynb
 # Datasets
-!data/**
+!id_mnist.npz
+!data/splits/episodes/*/*.zip
+!data/splits/flickr_audio/*.csv
+!data/splits/mnist_tidigits/*.csv
+# !data/**
 
 # Files to ignore that were re-included in exceptions:
 # Jupyter checkpoints
 .ipynb_checkpoints
 # Ignore extracted features from TIDigits (needs to be obtained from LDC)
-extracted
-# Ignore extracted episode data
-data/episodes/unimodal/*/**
+# data/processed/tidigits/*
+# # Ignore extracted feature log files
+# data/logs
+# # Ignore extracted episode data
+# data/episodes/unimodal/*/**
+

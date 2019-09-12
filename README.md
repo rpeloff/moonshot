@@ -1,5 +1,13 @@
-Multimodal One-Shot Learning Benchmark Tasks
-============================================
+# MOONSHOT
 
-Run research environment with:
-.../research_images/run_docker_env.sh --data-dir ~/datasets --jupyter-port 8888 --vs-port 8444 --jupyter-password password --vs-password password -e ~/.vscode/extensions -p 6006
+Baselines:
+
+`./run.sh baselines --name moonshot --image reloff/tensorflow-base:2.0.0-rc0-py36-cuda100`
+
+Testing:
+
+`./run.sh test_debug --name test --image reloff/tensorflow-base:2.0.0-rc0-py36-cuda100`
+
+Extract:
+
+`./run.sh extract --name extract`
