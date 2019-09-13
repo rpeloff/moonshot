@@ -45,6 +45,10 @@ def load_isolated_word_npz(feats_dir):
 
     `feats_dir` should contain 'train_words.npz', 'dev_words.npz' and
     'test_words.npz' (either mfcc or filterbank speech features).
+
+    NOTE:
+    Returns a dict of NpzFile objects for train, dev and test, each of which
+    contains a file handle and should be closed during cleanup.
     """
     logging.log(
         logging.INFO,
@@ -52,8 +56,7 @@ def load_isolated_word_npz(feats_dir):
     set_dict = {}
     for subset in ["train", "dev", "test"]:
         set_path = os.path.join(feats_dir, "{}_words.npz".format(subset))
-        with np.load(set_path) as npz:
-            set_dict[subset] = npz.files
+        set_dict[subset] = np.load(set_path)
     return set_dict
 
 
