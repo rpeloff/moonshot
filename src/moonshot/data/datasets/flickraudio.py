@@ -27,6 +27,8 @@ def fetch_isolated_word_lists(feats_dir):
     `feats_dir` should contain 'train_words.npz', 'dev_words.npz' and
     'test_words.npz' (either mfcc or filterbank speech features).
 
+    Extract word list metadata with `extract_all_uid_metadata`.
+
     Returns a dict of word lists for train, dev and test.
     """
     logging.log(
@@ -63,7 +65,7 @@ def load_isolated_word_npz(feats_dir):
 def extract_uid_metadata(uid):
     """Extract metadata for a given UID.
 
-    Apply to all UIDs: `map(extract_uid_metadata, uid_list)`.
+    Apply to all UIDs: see `extract_all_uid_metadata`.
 
     Return extracted metadata with format
     [uid, label, speaker, paired_image, production, frames].
@@ -73,6 +75,17 @@ def extract_uid_metadata(uid):
         uid, uid_parts[0], uid_parts[1],
         "{}_{}".format(uid_parts[2], uid_parts[3]), uid_parts[4], uid_parts[5]]
     return extracted
+
+
+def extract_all_uid_metadata(uid_list):
+    """Extract metadata for a given list of UID.
+
+    Return extracted metadata arrays with format
+    (uids, labels, speakers, paired_images, productions, frames).
+    """
+    return tuple(
+        np.array(metadata) for metadata in
+        zip(*map(extract_uid_metadata, uid_list)))
 
 
 def load_keyword_splits_csv(csv_path):

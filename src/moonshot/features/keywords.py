@@ -11,6 +11,10 @@ from __future__ import division
 from __future__ import print_function
 
 
+import functools
+import multiprocessing
+
+
 from absl import flags
 from absl import logging
 
@@ -22,8 +26,29 @@ import numpy as np
 FLAGS = flags.FLAGS
 
 
-# homophones identified with https://www.homophone.com .. :)
-TIDIGITS_STOP_WORDS = [
+# words from Flickr-Audio for one-shot learning
+FLICKR_ONE_SHOT = [
+    "baby",
+    "basketball",
+    "bicycle",
+    "bikini",
+    "canoe",
+    "hat",
+    "horse",
+    "jeep",
+    "mountain",
+    "ocean",
+    "river",
+    "snowboard",
+    "sunglass",
+    "surfboard",
+    "trampoline",
+]
+
+
+# homophones identified with https://www.homophone.com ... :)
+ALL_STOP_WORDS = [
+    # tidigits
     "one", "won",
     "two", "to", "too",
     "three",
@@ -35,25 +60,9 @@ TIDIGITS_STOP_WORDS = [
     "nine",
     "oh", "owe", "ohs", "owes",
     "zero", "-xero-",
-]
-
-FLICKR_STOP_WORDS = [
-    "baby",
-    "basketball",
-    "bicycle",
-    "canoe",
-    "jeep",
-    "mountain",
-    "snowboard",
-    "sunglass",
-    "surfboard",
-    "trampoline",
-    "bikini",
-    "hat",
-    "horse",
-    "ocean",
-    "river",
-]
+    # flickr-audio
+    # ... no homophones :)
+] + FLICKR_ONE_SHOT
 
 
 def process_caption_keywords(caption_set, spacy_model="en_core_web_lg"):
@@ -84,8 +93,8 @@ def process_caption_keywords(caption_set, spacy_model="en_core_web_lg"):
                 not token.is_stop  # remove stopwords
                 and not token.is_punct  # remove punctuation
                 and not token.is_digit  # remove digits
-                and not bool(sum(stop_word in token.text for stop_word in TIDIGITS_STOP_WORDS))  # remove tidigits
-                and not bool(sum(stop_word in token.lemma_ for stop_word in TIDIGITS_STOP_WORDS))  # remove tidigits
+                # and not bool(sum(stop_word in token.text for stop_word in TIDIGITS_STOP_WORDS))  # remove tidigits
+                # and not bool(sum(stop_word in token.lemma_ for stop_word in TIDIGITS_STOP_WORDS))  # remove tidigits
             )
             if valid_token:
                 keywords.append(token.text)
@@ -119,41 +128,63 @@ def filter_keyword_quality(keywords_set, min_caption_occurence=3):
 
     Return filtered keywords, see `process_caption_keywords` for format.
     """
-    logging.log(logging.INFO, "Filtering keyword quality ...")
+    logging.log(
+        logging.INFO,
+        "Filtering keyword quality with caption occurence >= {}".format(min_caption_occurence))
 
-    valid_idx = []
-    for idx, (uid, _, keyword, lemma) in enumerate(zip(*keywords_set)):
-        keyword_idx = np.union1d(
-            np.where(keywords_set[2] == keyword)[0],
-            np.where(keywords_set[3] == lemma)[0])
-        keyword_idx = np.intersect1d(
-            keyword_idx, np.where(keywords_set[0] == uid)[0])
+    _filter_keyword_quality_func = functools.partial(  # pooling accepts one arg
+        _filter_keyword_quality,
+        keywords_set=keywords_set,
+        min_caption_occurence=min_caption_occurence)
 
-        num_unique_captions = len(set(keywords_set[1][keyword_idx]))
-
-        if num_unique_captions >= min_caption_occurence:
-            valid_idx.append(idx)
-            if "debug" in FLAGS and FLAGS.debug:
-                logging.log_every_n(
-                    logging.DEBUG,
-                    "Keeping image keyword '{}' which occurs in {} (>= {}) captions".format(
-                        keyword, num_unique_captions, min_caption_occurence), 1000)
-        else:
-            if "debug" in FLAGS and FLAGS.debug:
-                logging.log_every_n(
-                    logging.DEBUG,
-                    "Throwing image keyword '{}' which occurs in {} (< {}) captions".format(
-                        keyword, num_unique_captions, min_caption_occurence), 1000)
+    with multiprocessing.Pool(processes=multiprocessing.cpu_count()-1) as pool:
+        valid_idx = pool.map(
+            _filter_keyword_quality_func, enumerate(zip(*keywords_set)))
+        valid_idx = [idx for idx in valid_idx if idx is not None]
 
     return tuple(x[valid_idx] for x in keywords_set)
+
+
+def _filter_keyword_quality(next_idx_keyword, keywords_set,
+                            min_caption_occurence):
+    """Check if keyword (at next index) matches quality requirement.
+
+    Private function for multiprocessing in `filter_keyword_quality`.
+    """
+    idx, (uid, _, keyword, lemma) = next_idx_keyword
+
+    keyword_idx = np.union1d(
+        np.where(keywords_set[2] == keyword)[0],
+        np.where(keywords_set[3] == lemma)[0])
+    keyword_idx = np.intersect1d(
+        keyword_idx, np.where(keywords_set[0] == uid)[0])
+
+    num_unique_captions = len(set(keywords_set[1][keyword_idx]))
+
+    if num_unique_captions >= min_caption_occurence:
+        if "debug" in FLAGS and FLAGS.debug:
+            logging.log_every_n(
+                logging.DEBUG,
+                "Keeping image keyword '{}' which occurs in {} (>= {}) captions".format(
+                    keyword, num_unique_captions, min_caption_occurence), 1000)
+        return idx  # return this index
+    else:
+        if "debug" in FLAGS and FLAGS.debug:
+            logging.log_every_n(
+                logging.DEBUG,
+                "Throwing image keyword '{}' which occurs in {} (< {}) captions".format(
+                    keyword, num_unique_captions, min_caption_occurence), 1000)
+        return None  # return None
 
 
 def filter_keep_keywords(keywords_set, keyword_list, use_lemma=True):
     """Filter keywords keeping those that occur in the keyword list.
 
+    `use_lemma`: indicates whether to compare keywords or baseform lemma.
+
     Return filtered keywords, see `process_caption_keywords` for format.
     """
-    logging.log(logging.INFO, "Filtering keywords test (by keep list) ...")
+    logging.log(logging.INFO, "Filtering keywords (by keep list) ...")
 
     keyword_data = keywords_set[3] if use_lemma else keywords_set[2]
     valid_idx = np.where(np.isin(keyword_data, keyword_list))[0]
@@ -164,12 +195,25 @@ def filter_keep_keywords(keywords_set, keyword_list, use_lemma=True):
 def filter_remove_keywords(keywords_set, keyword_list, use_lemma=True):
     """Filter keywords removing those that occur in the keyword list.
 
+    `use_lemma`: indicates whether to compare keywords or baseform lemma.
+
     Return filtered keywords, see `process_caption_keywords` for format.
     """
-    logging.log(logging.INFO, "Filtering keywords (by remove list) ...")
+    logging.log(logging.INFO, "Filtering keywords (by keyword remove list) ...")
 
     keyword_data = keywords_set[3] if use_lemma else keywords_set[2]
     valid_idx = np.where(np.invert(np.isin(keyword_data, keyword_list)))[0]
+
+    return tuple(x[valid_idx] for x in keywords_set)
+
+
+def filter_remove_images(keywords_set, image_uid_list):
+    """Filter keyword-image pairs removing images in the specified list.
+    """
+    logging.log(
+        logging.INFO, "Filtering keyword-image pairs (by image remove list)")
+
+    valid_idx = np.where(np.invert(np.isin(keywords_set[0], image_uid_list)))[0]
 
     return tuple(x[valid_idx] for x in keywords_set)
 
@@ -243,7 +287,9 @@ def get_count_limited_keywords(keywords_set, min_occurence=10, **kwargs):
 
     `min_occurence`: integer specifies minimum number of keyword occurences.
     """
-    logging.log(logging.INFO, "Computing count limited keywords with minimum occurence >= {}".format(min_occurence))
+    logging.log(
+        logging.INFO,
+        "Computing count limited keywords with minimum occurence >= {}".format(min_occurence))
 
     unique_keywords, keyword_counts = get_unique_keywords_counts(
         keywords_set, **kwargs)
@@ -278,28 +324,32 @@ def plot_keyword_count_distribution(keywords_set, output_dir, filename):
     unique_keywords, keyword_counts = get_unique_keywords_counts(keywords_set)
 
     plt.figure(figsize=(12, len(keyword_counts) * 0.2))
-    plt.barh(unique_keywords[np.argsort(keyword_counts)], keyword_counts[np.argsort(keyword_counts)])
+    plt.barh(
+        unique_keywords[np.argsort(keyword_counts)], keyword_counts[np.argsort(keyword_counts)])
     plt.title("Unique Keyword Occurences")
     plt.tight_layout()
     
     plt.savefig(os.path.join(output_dir, "{}.png".format(filename)))
 
 
-def save_keyword_images(faudio_set, keywords_set, images_dir, keyword_list, output_dir, max_per_row=5):
+def save_keyword_images(keywords_set, images_dir, keyword_list, output_dir,
+                        max_per_row=5, max_images=20):
     """TODO(rpeloff) document and move to plotting (?)"""
     import matplotlib.pyplot as plt
     from moonshot.utils import image_utils
     import os
 
     for keyword in keyword_list:
-        image_uids = np.unique(faudio_set[3][np.where(keywords_set[3] == keyword)[0]])
+        image_uids = np.unique(keywords_set[0][np.where(keywords_set[3] == keyword)[0]])
         n_cols = min(len(image_uids), max_per_row)
-        n_rows = int(np.ceil(len(image_uids) / max_per_row))
-        
+        n_rows = min(int(np.ceil(len(image_uids) / max_per_row)), int(max_images / max_per_row))
+
         plt.figure(figsize=(n_cols * 3, n_rows * 3))
         plt.suptitle(keyword, fontsize=14)
-        
+
         for image_index, uid in enumerate(image_uids):
+            if image_index + 1 > max_images:
+                break
             plt.subplot(n_rows, n_cols, image_index + 1)
             plt.imshow(
                 image_utils.load_image_array(
@@ -312,92 +362,98 @@ def save_keyword_images(faudio_set, keywords_set, images_dir, keyword_list, outp
         plt.savefig(os.path.join(output_dir, "{}_filtered_images.png".format(keyword)))
 
 
-def filter_flickr_audio_captions(faudio_keyword_set, remove_words, spacy_model="en_core_web_md"):
-    """Filter Flickr Audio data removing images with captions containing the specified words."""
-    nlp = spacy.load(spacy_model)
-    remove_uid = []
-    for idx, utterance in enumerate(zip(*faudio_keyword_set)):
-        valid_utterance = True
-        doc = nlp(str(utterance[8]).lower())
-        for token in doc:
-            if token.text in remove_words or token.lemma_ in remove_words:
-                valid_utterance = False
+# TODO(rpeloff) remove old code if unused
 
-        if not valid_utterance:
-            remove_uid.append(utterance[4])
+# def filter_flickr_audio_captions(faudio_keyword_set, remove_words, spacy_model="en_core_web_md"):
+#     """Filter Flickr Audio data removing images with captions containing the specified words."""
+#     nlp = spacy.load(spacy_model)
+#     remove_uid = []
+#     for idx, utterance in enumerate(zip(*faudio_keyword_set)):
+#         valid_utterance = True
+#         doc = nlp(str(utterance[8]).lower())
+#         for token in doc:
+#             if token.text in remove_words or token.lemma_ in remove_words:
+#                 valid_utterance = False
 
-    remove_uid = np.unique(remove_uid)
-    valid_idx = []
-    for idx, utterance in enumerate(zip(*faudio_keyword_set)):
-        if utterance[4] not in remove_uid:
-            valid_idx.append(idx)
+#         if not valid_utterance:
+#             remove_uid.append(utterance[4])
 
-    faudio_set_filtered = tuple(x[valid_idx] for x in faudio_keyword_set)
-    return faudio_set_filtered
+#     remove_uid = np.unique(remove_uid)
+#     valid_idx = []
+#     for idx, utterance in enumerate(zip(*faudio_keyword_set)):
+#         if utterance[4] not in remove_uid:
+#             valid_idx.append(idx)
 
-
-def filter_flickr_audio_semantic_keywords(faudio_keyword_set, remove_words, threshold=0.7, spacy_model="en_core_web_md"):
-    nlp = spacy.load(spacy_model)
-    faudio_words = list(set(faudio_keyword_set[2]) | set(faudio_keyword_set[7]))
-    similar_keywords = {}
-    for remove_word in remove_words:
-        similar = []
-        remove_token = nlp(str(remove_word))
-        if remove_token:
-            if remove_token.vector_norm:
-                for word in faudio_words:
-                    token = nlp(str(word))
-                    if token:
-                        if token.vector_norm:
-                            similarity = remove_token.similarity(token)
-                            if similarity >= threshold:
-                                similar.append((word, similarity))
-                                similar.append((token[0].lemma_, similarity))
-
-        similar = np.asarray(list(set(similar)))
-        similar_keywords[remove_word] = similar
-
-    return similar_keywords
+#     faudio_set_filtered = tuple(x[valid_idx] for x in faudio_keyword_set)
+#     return faudio_set_filtered
 
 
-def compare_keywords_files(keyword_files):
-    """Compare the different keyword list files.
+# TODO(rpeloff) remove old code if unused
+
+# def filter_flickr_audio_semantic_keywords(faudio_keyword_set, remove_words, threshold=0.7, spacy_model="en_core_web_md"):
+#     nlp = spacy.load(spacy_model)
+#     faudio_words = list(set(faudio_keyword_set[2]) | set(faudio_keyword_set[7]))
+#     similar_keywords = {}
+#     for remove_word in remove_words:
+#         similar = []
+#         remove_token = nlp(str(remove_word))
+#         if remove_token:
+#             if remove_token.vector_norm:
+#                 for word in faudio_words:
+#                     token = nlp(str(word))
+#                     if token:
+#                         if token.vector_norm:
+#                             similarity = remove_token.similarity(token)
+#                             if similarity >= threshold:
+#                                 similar.append((word, similarity))
+#                                 similar.append((token[0].lemma_, similarity))
+
+#         similar = np.asarray(list(set(similar)))
+#         similar_keywords[remove_word] = similar
+
+#     return similar_keywords
+
+
+# TODO(rpeloff) remove old code if unused
+
+# def compare_keywords_files(keyword_files):
+#     """Compare the different keyword list files.
     
-    Returns the common keywords set and a boolean dict of the unique keyword
-    occurences per keyword file.
-    """
-    keywords_dict = {}
-    for keyword_file in keyword_files:
-        keywords = []
-        with open(keyword_file, "r") as (f):
-            for line in f:
-                keywords.append(line.strip())
+#     Returns the common keywords set and a boolean dict of the unique keyword
+#     occurences per keyword file.
+#     """
+#     keywords_dict = {}
+#     for keyword_file in keyword_files:
+#         keywords = []
+#         with open(keyword_file, "r") as (f):
+#             for line in f:
+#                 keywords.append(line.strip())
 
-        keywords_dict[keyword_file] = keywords
+#         keywords_dict[keyword_file] = keywords
 
-    common = set()
-    all_keywords = set()
-    for keyword_file, keyword_list in keywords_dict.items():
-        if common == set():
-            common = set(keyword_list)
-        else:
-            common = common & set(keyword_list)
-        all_keywords = all_keywords | set(keyword_list)
+#     common = set()
+#     all_keywords = set()
+#     for keyword_file, keyword_list in keywords_dict.items():
+#         if common == set():
+#             common = set(keyword_list)
+#         else:
+#             common = common & set(keyword_list)
+#         all_keywords = all_keywords | set(keyword_list)
 
-    unique_dict = {}
-    for keyword_file, keyword_list in keywords_dict.items():
-        unique_dict[keyword_file] = set(keyword_list) - common
+#     unique_dict = {}
+#     for keyword_file, keyword_list in keywords_dict.items():
+#         unique_dict[keyword_file] = set(keyword_list) - common
 
-    all_unique = set()
-    for unique_set in unique_dict.values():
-        all_unique = all_unique | unique_set
+#     all_unique = set()
+#     for unique_set in unique_dict.values():
+#         all_unique = all_unique | unique_set
 
-    unique_occur_dict = {}
-    for keyword_file in keyword_files:
-        keyword_occur_dict = {}
-        for keyword in all_unique:
-            keyword_occur_dict[keyword] = keyword in unique_dict[keyword_file]
+#     unique_occur_dict = {}
+#     for keyword_file in keyword_files:
+#         keyword_occur_dict = {}
+#         for keyword in all_unique:
+#             keyword_occur_dict[keyword] = keyword in unique_dict[keyword_file]
 
-        unique_occur_dict[keyword_file] = keyword_occur_dict
+#         unique_occur_dict[keyword_file] = keyword_occur_dict
 
-    return (common, unique_occur_dict)
+#     return (common, unique_occur_dict)

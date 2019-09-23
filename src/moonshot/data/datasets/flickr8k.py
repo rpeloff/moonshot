@@ -1,6 +1,6 @@
 """File IO for Flickr 8K images and text captions.
 
-Note:
+NOTE:
 The official site for the Flickr 8k data appears to have been taken down.
 Thankfully Jason Brownlee has created direct download links to the original data
 on his [datasets repo](https://github.com/jbrownlee/Datasets/releases).
