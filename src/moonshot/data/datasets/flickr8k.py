@@ -27,47 +27,7 @@ from absl import logging
 import numpy as np
 
 
-# TODO(rpeloff) old code, remove if sure not using this
-# def extract_flickr8k_images(images_dir, captions_dir, size=(224, 224)):
-#     """Load Flickr 8K images according to the caption corpus splits.
-    
-#     The Flicker 8k text caption corpus is used only for dataset splits.
-#     """
-#     train, val, test = None, None, None
-
-#     split_dict = flickr8k_split.get_flickr8k_train_test_dev(captions_dir)
-    
-#     assert os.path.exists(os.path.join(images_dir, "{}.jpg".format(split_dict["train"][0])))
-    
-#     image_files = [os.path.join(images_dir, name) for name in os.listdir(images_dir)]
-    
-#     image = Image.open(image_files[0])
-#     print("Example image info:", image_files[0])
-#     print("Format: {} Mode: {} Size: {}".format(image.format, image.mode, image.size))
-
-#     image_data = []
-#     image_uids = []
-#     for img_file in sorted(image_files):
-#         image_arr = image_utils.load_image_array(img_file)
-#         image_data.append(image_utils.resize_square_crop(image_arr, size=size))
-#         uid = os.path.splitext(os.path.split(img_file)[-1])[0]
-#         image_uids.append(uid)
-
-#     image_data = np.asarray(image_data)
-#     image_uids = np.asarray(image_uids)
-
-#     train_idx = np.isin(image_uids, split_dict["train"])
-#     val_idx = np.isin(image_uids, split_dict["dev"])
-#     test_idx = np.isin(image_uids, split_dict["test"])
-
-#     train = (image_uids[train_idx], image_data[train_idx])
-#     val = (image_uids[val_idx], image_data[val_idx])
-#     test = (image_uids[test_idx], image_data[test_idx])
-
-#     return train, val, test
-
-
-def load_flickr8k_splits(captions_dir):
+def load_flickr8k_splits(splits_dir="data/splits/flickr8k"):
     """Load train-dev-test splits from Flicker 8k text caption corpus."""
     set_dict = {}
     for subset in ["train", "dev", "test"]:
@@ -75,7 +35,7 @@ def load_flickr8k_splits(captions_dir):
             set_dict[subset] = []
 
         subset_path = os.path.join(
-            captions_dir, "Flickr_8k.{}Images.txt".format(subset))
+            splits_dir, "Flickr_8k.{}Images.txt".format(subset))
         assert os.path.exists(subset_path)
 
         logging.log(logging.INFO, "Loading Flickr 8k {} split: {}".format(
@@ -87,11 +47,12 @@ def load_flickr8k_splits(captions_dir):
     return set_dict
 
 
-def load_flickr8k_captions(captions_dir, load_lemma=False):
+def load_flickr8k_captions(captions_dir, load_lemma=False,
+                           splits_dir="data/splits/flickr8k"):
     """Load Flickr 8k text caption corpus."""
     train, val, test = None, None, None
 
-    split_dict = load_flickr8k_splits(captions_dir)
+    split_dict = load_flickr8k_splits(splits_dir)
 
     captions_path = os.path.join(
         captions_dir,

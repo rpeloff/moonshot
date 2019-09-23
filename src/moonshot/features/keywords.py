@@ -26,26 +26,6 @@ import numpy as np
 FLAGS = flags.FLAGS
 
 
-# words from Flickr-Audio for one-shot learning
-FLICKR_ONE_SHOT = [
-    "baby",
-    "basketball",
-    "bicycle",
-    "bikini",
-    "canoe",
-    "hat",
-    "horse",
-    "jeep",
-    "mountain",
-    "ocean",
-    "river",
-    "snowboard",
-    "sunglass",
-    "surfboard",
-    "trampoline",
-]
-
-
 # homophones identified with https://www.homophone.com ... :)
 ALL_STOP_WORDS = [
     # tidigits
@@ -62,7 +42,7 @@ ALL_STOP_WORDS = [
     "zero", "-xero-",
     # flickr-audio
     # ... no homophones :)
-] + FLICKR_ONE_SHOT
+]
 
 
 def process_caption_keywords(caption_set, spacy_model="en_core_web_lg"):

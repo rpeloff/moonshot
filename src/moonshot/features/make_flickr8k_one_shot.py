@@ -63,7 +63,8 @@ def main(argv):
 
     # get flickr 8k train captions
     caption_corpus = flickr8k.load_flickr8k_captions(
-        os.path.join("data", "external", "flickr8k_text"))
+        os.path.join("data", "external", "flickr8k_text"),
+        splits_dir=os.path.join("data", "splits", "flickr8k"))
     train_captions = caption_corpus[0]
 
     # get flickr-audio train data

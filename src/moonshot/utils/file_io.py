@@ -15,6 +15,9 @@ import csv
 import os
 
 
+from absl.app import logging
+
+
 def check_create_dir(path):
     """Check if a directory exists otherwise create it."""
     dir_name = os.path.dirname(path)
@@ -33,3 +36,20 @@ def write_csv(path, *columns, column_names=None):
             csv_writer.writerow(column_names)
 
         csv_writer.writerows(zip(*columns))
+
+
+def read_csv(path, skip_first=False, delimiter=","):
+    """Read a csv file."""
+    logging.log(logging.INFO, "Reading csv file: {}".format(path))
+    with open(path, "r", newline="") as csv_file:
+        csv_reader = csv.reader(csv_file, delimiter=delimiter)
+        rows = []
+        for idx, row in enumerate(csv_reader):
+            if skip_first and idx == 0:
+                logging.log(
+                    logging.INFO, "Skipping first row: {}".format(row))
+            else:
+                rows.append(row)
+        csv_data = tuple(zip(*rows))
+
+    return csv_data
