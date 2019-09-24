@@ -20,7 +20,8 @@ from absl import logging
 import numpy as np
 
 
-def load_flickr30k_splits(splits_dir="data/splits/flickr30k"):
+def load_flickr30k_splits(splits_dir="data/splits/flickr30k",
+                          flickr8k_splits=None):
     """Load train-dev-test splits from Flicker 30k text caption corpus."""
     set_dict = {}
     for subset in ["train", "dev", "test"]:
@@ -37,6 +38,9 @@ def load_flickr30k_splits(splits_dir="data/splits/flickr30k"):
         with open(subset_path) as f:
             for line in f:
                 set_dict[subset].append(os.path.splitext(line.strip())[0])
+
+    if flickr8k_splits is not None:  # remove flickr 8k images from 30k splits
+        set_dict = remove_flickr8k_splits(set_dict, flickr8k_splits)
 
     return set_dict
 
@@ -83,9 +87,7 @@ def load_flickr30k_captions(captions_dir, splits_dir="data/splits/flickr30k",
     """Load Flickr 30k text caption corpus."""
     train, val, test = None, None, None
 
-    split_dict = load_flickr30k_splits(splits_dir)
-    if flickr8k_splits is not None:  # remove flickr 8k images
-        split_dict = remove_flickr8k_splits(split_dict, flickr8k_splits)
+    split_dict = load_flickr30k_splits(splits_dir, flickr8k_splits)
 
     captions_path = os.path.join(
         captions_dir,
@@ -126,5 +128,28 @@ def load_flickr30k_captions(captions_dir, splits_dir="data/splits/flickr30k",
     train = (image_uids[train_idx], captions[train_idx], caption_numbers[train_idx])
     val = (image_uids[val_idx], captions[val_idx], caption_numbers[val_idx])
     test = (image_uids[test_idx], captions[test_idx], caption_numbers[test_idx])
+
+    return train, val, test
+
+
+def fetch_flickr30k_image_paths(images_dir, splits_dir="data/splits/flickr30k",
+                                flickr8k_splits=None):
+    """Fetch Flickr 30k image paths corresponding to the caption corpus splits."""
+    train, val, test = None, None, None
+
+    split_dict = load_flickr30k_splits(splits_dir, flickr8k_splits)
+
+    image_paths = np.asarray([
+        os.path.join(images_dir, name) for name in os.listdir(images_dir)])
+    image_uids = np.asarray([
+        os.path.splitext(os.path.split(path)[-1])[0] for path in image_paths])
+
+    train_idx = np.isin(image_uids, split_dict["train"])
+    val_idx = np.isin(image_uids, split_dict["dev"])
+    test_idx = np.isin(image_uids, split_dict["test"])
+
+    train = (image_uids[train_idx], image_paths[train_idx])
+    val = (image_uids[val_idx], image_paths[val_idx])
+    test = (image_uids[test_idx], image_paths[test_idx])
 
     return train, val, test
