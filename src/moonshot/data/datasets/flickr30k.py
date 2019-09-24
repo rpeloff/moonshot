@@ -20,9 +20,6 @@ from absl import logging
 import numpy as np
 
 
-from moonshot.data.datasets import flickr8k
-
-
 def load_flickr30k_splits(splits_dir="data/splits/flickr30k"):
     """Load train-dev-test splits from Flicker 30k text caption corpus."""
     set_dict = {}
@@ -61,13 +58,33 @@ def remove_flickr8k_splits(flickr30k_splits, flickr8k_splits):
     return flickr30_removed
 
 
+def _load_flickr30k_unrelated_captions(splits_dir="data/splits/flickr30k"):
+    """Load unrelated image captions from the Flickr 30k text caption corpus."""
+    path = os.path.join(splits_dir, "UNRELATED_CAPTIONS")
+    assert os.path.exists(path)
+
+    image_uids, caption_numbers = [], []
+    with open(path, "rb") as f:
+        next(f)  # skip header line
+
+        for line in f:
+            image_uid, caption_number = line.decode("utf8").strip().split(" ")
+            image_uids.append(image_uid)
+            caption_numbers.append(str(int(caption_number) - 1))
+
+    image_uids = np.asarray(image_uids)
+    caption_numbers = np.asarray(caption_numbers)
+
+    return image_uids, caption_numbers
+
+
 def load_flickr30k_captions(captions_dir, splits_dir="data/splits/flickr30k",
                             flickr8k_splits=None):
     """Load Flickr 30k text caption corpus."""
     train, val, test = None, None, None
 
     split_dict = load_flickr30k_splits(splits_dir)
-    if flickr8k_splits is not None:
+    if flickr8k_splits is not None:  # remove flickr 8k images
         split_dict = remove_flickr8k_splits(split_dict, flickr8k_splits)
 
     captions_path = os.path.join(
@@ -88,10 +105,20 @@ def load_flickr30k_captions(captions_dir, splits_dir="data/splits/flickr30k",
             captions.append(str(caption).strip().lower())
             caption_numbers.append(caption_number)
 
-    image_uids = np.asarray(image_uids)
-    captions = np.asarray(captions)
-    caption_numbers = np.asarray(caption_numbers)
+    # remove unrelated captions
+    flickr30k_unrelated = _load_flickr30k_unrelated_captions(splits_dir)
 
+    def filter_remove_unrelated(index):
+        unrelated_idx = np.where(flickr30k_unrelated[0] == image_uids[index])[0]
+        return caption_numbers[index] not in flickr30k_unrelated[1][unrelated_idx]
+
+    filter_idx = list(filter(filter_remove_unrelated, range(len(image_uids))))
+
+    image_uids = np.asarray(image_uids)[filter_idx]
+    captions = np.asarray(captions)[filter_idx]
+    caption_numbers = np.asarray(caption_numbers)[filter_idx]
+
+    # split into train-dev-test
     train_idx = np.isin(image_uids, split_dict["train"])
     val_idx = np.isin(image_uids, split_dict["dev"])
     test_idx = np.isin(image_uids, split_dict["test"])
