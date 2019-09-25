@@ -31,6 +31,7 @@
 !data/splits/flickr8k/*.txt
 !data/splits/flickr30k/*.txt
 !data/splits/flickr30k/UNRELATED_CAPTIONS
+!data/splits/mscoco/*.txt
 !data/splits/mnist_tidigits/*.csv
 # !data/**
 
