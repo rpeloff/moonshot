@@ -23,6 +23,9 @@ import spacy
 import numpy as np
 
 
+from moonshot.utils import file_io
+
+
 FLAGS = flags.FLAGS
 
 
@@ -319,7 +322,14 @@ def save_keyword_images(keywords_set, images_dir, keyword_list, output_dir,
     from moonshot.utils import image_utils
     import os
 
+    file_io.check_create_dir(output_dir)
+
     for keyword in keyword_list:
+        if keyword not in keywords_set[3]:
+            logging.log(
+                logging.INFO, "Keyword not found in set: {}".format(keyword))
+            continue  # skip to next keyword
+
         image_uids = np.unique(keywords_set[0][np.where(keywords_set[3] == keyword)[0]])
         n_cols = min(len(image_uids), max_per_row)
         n_rows = min(int(np.ceil(len(image_uids) / max_per_row)), int(max_images / max_per_row))
