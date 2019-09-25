@@ -93,10 +93,10 @@ def fetch_flickr8k_image_paths(images_dir, captions_dir):
 
     split_dict = load_flickr8k_splits(captions_dir)
 
-    image_paths = [
-        os.path.join(images_dir, name) for name in os.listdir(images_dir)]
-    image_uids = [
-        os.path.splitext(os.path.split(path)[-1])[0] for path in image_paths]
+    image_paths = np.asarray([
+        os.path.join(images_dir, name) for name in os.listdir(images_dir)])
+    image_uids = np.asarray([
+        os.path.splitext(os.path.split(path)[-1])[0] for path in image_paths])
 
     train_idx = np.isin(image_uids, split_dict["train"])
     val_idx = np.isin(image_uids, split_dict["dev"])

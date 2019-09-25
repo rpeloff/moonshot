@@ -28,7 +28,8 @@ baselines:
 extraction:
 	make upgrade_tools \
 	&& python3 -m pip install -e .[extraction] \
-	&& python3 -c "import nltk; nltk.download('stopwords')"
+	&& python3 -c "import nltk; nltk.download('stopwords')" \
+	&& python3 -m spacy download -d en_core_web_lg-2.1.0
 
 clean:
 	rm -rf data/processed/tidigits/* data/processed/flickr_audio/* data/logs/tidigits/* data/logs/flickr_audio/* 
