@@ -90,8 +90,7 @@ def load_flickr30k_captions(captions_dir, splits_dir="data/splits/flickr30k",
     split_dict = load_flickr30k_splits(splits_dir, flickr8k_splits)
 
     captions_path = os.path.join(
-        captions_dir,
-        "results_20130124.token")
+        captions_dir, "results_20130124.token")
     assert os.path.exists(captions_path)
 
     logging.log(logging.INFO, "Loading Flickr 30k text caption corpus: {}".format(

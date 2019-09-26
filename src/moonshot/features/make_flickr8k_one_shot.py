@@ -43,7 +43,9 @@ flags.DEFINE_integer("min_occurence", 20, "minimum number of unique images per k
 flags.DEFINE_integer("one_shot_classes", 50, "number of one-shot keyword classes to random sample",
                      lower_bound=1)
 flags.DEFINE_enum("save_images", None, ["one_shot", "background", "both"],
-                  "save a number of example images per keyword for specified sets")
+                  "save a number of example images per keyword from specified sets")
+flags.DEFINE_integer("num_keywords", None, "number of keywords to sample for saving example images",
+                     lower_bound=1)
 flags.DEFINE_enum("mode", None, ["write", "statistics", "both"],
                   "target: write keyword sets and/or display keyword statistics")
 flags.DEFINE_bool("debug", False, "debug mode")
@@ -73,8 +75,8 @@ def main(argv):
     train_faudio = flickraudio.extract_all_uid_metadata(
         faudio_uid_dict["train"])
 
-    # flickr 8k capttion keyword filtering
-    # ====================================
+    # flickr 8k caption keyword filtering
+    # ===================================
 
     # 1. identify and lemmatize keywords with a language model
     train_caption_keywords = keywords.process_caption_keywords(
@@ -137,19 +139,30 @@ def main(argv):
     if FLAGS.mode == "statistics" or FLAGS.mode == "both":
         pass  # TODO(rpeloff)
 
-    # save example images if specified
+    # save example one-shot test images if specified
     if FLAGS.save_images == "one_shot" or FLAGS.save_images == "both":
+        save_keywords = np.asarray(one_shot_keyword_set)
+        save_keyword_idx = np.random.choice(
+            np.arange(len(save_keywords)), FLAGS.num_keywords, replace=False)
+        save_keywords = save_keywords[save_keyword_idx]
+
         keywords.save_keyword_images(
             train_keywords_one_shot,
-            os.path.join("data", "external", "flickr8k_images"),
-            one_shot_keyword_set, "figures/flickr_one_shot",
+            os.path.join("data", "external", "flickr8k_images"), save_keywords,
+            os.path.join("figures", "flickr8k", "one_shot_keywords"),
             max_per_row=5, max_images=20)
 
+    # save example one-shot background images if specified
     if FLAGS.save_images == "background" or FLAGS.save_images == "both":
+        save_keywords = np.delete(unique_keywords, rand_idx)
+        save_keyword_idx = np.random.choice(
+            np.arange(len(save_keywords)), FLAGS.num_keywords, replace=False)
+        save_keywords = save_keywords[save_keyword_idx]
+
         keywords.save_keyword_images(
             train_keywords_background,
-            os.path.join("data", "external", "flickr8k_images"),
-            np.delete(unique_keywords, rand_idx), "figures/flickr_background",
+            os.path.join("data", "external", "flickr8k_images"), save_keywords,
+            os.path.join("figures", "flickr8k", "background_keywords"),
             max_per_row=5, max_images=20)
 
 

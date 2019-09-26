@@ -1,10 +1,10 @@
-"""Select Flickr 30k keyword-image pairs for one-shot background training.
+"""Select MSCOCO keyword-image pairs for one-shot background training.
 
-Write background split to data/splits/flickr_one_shot:
-`python3 src/moonshot/features/make_flickr30k_background.py --mode write`
+Write background split to data/splits/mscoco_one_shot:
+`python3 src/moonshot/features/make_mscoco_background.py --mode write`
 
 Debug:
-`python3 -m pdb src/moonshot/features/make_flickr30k_background.py --debug --mode write`
+`python3 -m pdb src/moonshot/features/make_mscoco_background.py --debug --mode write`
 
 Author: Ryan Eloff
 Contact: ryan.peter.eloff@gmail.com
@@ -29,7 +29,7 @@ import numpy as np
 
 
 from moonshot.data.datasets import flickr8k
-from moonshot.data.datasets import flickr30k
+from moonshot.data.datasets import mscoco
 from moonshot.features import keywords
 from moonshot.utils import file_io
 
@@ -59,19 +59,14 @@ def main(argv):
         logging.set_verbosity(logging.DEBUG)
         logging.log(logging.DEBUG, "Running in debug mode")
 
-    # get flickr 30k train captions with flickr 8k removed
-    flickr8k_splits = flickr8k.load_flickr8k_splits(
-        os.path.join("data", "splits", "flickr8k"))
+    # get mscoco train captions with flickr 30k removed
+    train_captions = mscoco.load_mscoco_captions(
+        os.path.join("data", "external", "mscoco", "annotations"),
+        caption_file="captions_train2017.json",
+        remove_flickr_path=os.path.join("data", "splits", "mscoco", "remove_flickr30k.txt"))
 
-    caption_corpus = flickr30k.load_flickr30k_captions(
-        os.path.join("data", "external", "flickr30k_text"),
-        splits_dir=os.path.join("data", "splits", "flickr30k"),
-        flickr8k_splits=flickr8k_splits)
-
-    train_captions = caption_corpus[0]
-
-    # flickr 30k caption keyword filtering
-    # ====================================
+    # mscoco caption keyword filtering
+    # ================================
 
     # 1. identify and lemmatize keywords with a language model
     train_caption_keywords = keywords.process_caption_keywords(
@@ -106,11 +101,11 @@ def main(argv):
     # write keyword set splits to data directory
     if FLAGS.mode == "write" or FLAGS.mode == "both":
         file_io.write_csv(
-            os.path.join("data", "splits", "flickr_one_shot", "test_one_shot_flickr30k.csv"),
+            os.path.join("data", "splits", "mscoco_one_shot", "test_one_shot.csv"),
             *train_keywords_one_shot,
             column_names=["image_uid", "caption_number", "keyword", "lemma"])
         file_io.write_csv(
-            os.path.join("data", "splits", "flickr_one_shot", "train_background_flickr30k.csv"),
+            os.path.join("data", "splits", "mscoco_one_shot", "train_background.csv"),
             *train_keywords_background,
             column_names=["image_uid", "caption_number", "keyword", "lemma"])
 
@@ -122,15 +117,15 @@ def main(argv):
     if FLAGS.save_images == "one_shot" or FLAGS.save_images == "both":
         keywords.save_keyword_images(
             train_keywords_one_shot,
-            os.path.join("data", "external", "flickr30k_images"),
-            one_shot_keyword_set, "figures/flickr_one_shot_flickr30k",
+            os.path.join("data", "external", "mscoco", "train2017"),
+            one_shot_keyword_set, "figures/flickr_one_shot_mscoco",
             max_per_row=5, max_images=20)
 
     # if FLAGS.save_images == "background" or FLAGS.save_images == "both":
     #     keywords.save_keyword_images(
     #         train_keywords_background,
-    #         os.path.join("data", "external", "flickr30k_images"),
-    #         np.delete(unique_keywords, rand_idx), "figures/flickr_background_flickr30k",
+    #         os.path.join("data", "external", "mscoco", "train2017"),
+    #         np.delete(unique_keywords, rand_idx), "figures/flickr_background_mscoco",
     #         max_per_row=5, max_images=20)
 
 
