@@ -61,7 +61,7 @@ def multiprocess_map(func, iterable, *worker_args, n_cores=None, mode="map", **p
             shared_args_proxy = manager.list(worker_args)
 
         with mp.Pool(processes=n_cores, initializer=init_worker,
-                     initargs=shared_args_proxy) as pool:
+                     initargs=shared_args_proxy, **pool_kwargs) as pool:
             if mode == "map":
                 results = pool.map(func, iterable)
             elif mode == "starmap":
