@@ -26,12 +26,13 @@
 # Datasets
 !id_mnist.npz
 !data/splits/episodes/*/*.zip
-!data/splits/flickr_one_shot/*.csv
-!data/splits/flickr_one_shot/*.txt
 !data/splits/flickr8k/*.txt
+!data/splits/flickr8k/*.csv
 !data/splits/flickr30k/*.txt
+!data/splits/flickr30k/*.csv
 !data/splits/flickr30k/UNRELATED_CAPTIONS
 !data/splits/mscoco/*.txt
+!data/splits/mscoco/*.csv
 !data/splits/mnist_tidigits/*.csv
 # !data/**
 

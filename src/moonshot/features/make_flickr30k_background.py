@@ -17,6 +17,7 @@ from __future__ import division
 from __future__ import print_function
 
 
+import copy
 import os
 
 
@@ -40,8 +41,11 @@ flags.DEFINE_integer("min_captions", 2, "minimum number of image captions for ke
                      lower_bound=1, upper_bound=5)
 flags.DEFINE_integer("min_occurence", 20, "minimum number of unique images per keyword",
                      lower_bound=1)
+flags.DEFINE_float("similarity", 0.85, "threshold for finding semantically similar keywords")
 flags.DEFINE_enum("save_images", None, ["one_shot", "background", "both"],
                   "save a number of example images per keyword for specified sets")
+flags.DEFINE_integer("num_keywords", None, "number of keywords to sample for saving example images",
+                     lower_bound=1)
 flags.DEFINE_enum("mode", None, ["write", "statistics", "both"],
                   "target: write keyword sets and/or display keyword statistics")
 flags.DEFINE_bool("debug", False, "debug mode")
@@ -59,7 +63,7 @@ def main(argv):
         logging.set_verbosity(logging.DEBUG)
         logging.log(logging.DEBUG, "Running in debug mode")
 
-    # get flickr 30k train captions with flickr 8k removed
+    # get flickr 30k text captions with flickr 8k removed
     flickr8k_splits = flickr8k.load_flickr8k_splits(
         os.path.join("data", "splits", "flickr8k"))
 
@@ -68,70 +72,128 @@ def main(argv):
         splits_dir=os.path.join("data", "splits", "flickr30k"),
         flickr8k_splits=flickr8k_splits)
 
-    train_captions = caption_corpus[0]
+    subsets = ["train", "dev", "test"]
+    caption_corpus = {
+        subset: caption_set for (subset, caption_set)
+        in zip(subsets, caption_corpus)}
 
     # flickr 30k caption keyword filtering
     # ====================================
 
-    # 1. identify and lemmatize keywords with a language model
-    train_caption_keywords = keywords.process_caption_keywords(
-        train_captions, spacy_model=FLAGS.spacy_model)
+    caption_keywords = {}
+    for subset in subsets:
+        # 1. identify and lemmatize keywords with a language model
+        caption_keywords[subset] = keywords.process_caption_keywords(
+            caption_corpus[subset], spacy_model=FLAGS.spacy_model)
 
-    # 2. filter quality of keyword-image pairs
-    train_caption_keywords = keywords.filter_keyword_quality(
-        train_caption_keywords, min_caption_occurence=FLAGS.min_captions)
+        # 2. filter quality of keyword-image pairs
+        caption_keywords[subset] = keywords.filter_keyword_quality(
+            caption_keywords[subset], min_caption_occurence=FLAGS.min_captions)
 
-    # 3. remove long tail, keeping minimum required keyword-images for one-shot
-    keep_keywords = keywords.get_count_limited_keywords(
-        train_caption_keywords, min_occurence=FLAGS.min_occurence, use_lemma=True)
-    train_caption_keywords = keywords.filter_keep_keywords(
-        train_caption_keywords, keep_keywords)
+    # flickr 30k one-shot benchmark evaluation data selection
+    # =======================================================
 
     # load one-shot keywords selected from flickr 8k keyword-image pairs
     one_shot_keyword_set = file_io.read_csv(
-        os.path.join("data", "splits", "flickr_one_shot", "one_shot_keywords.txt"))[0]
+        os.path.join("data", "splits", "flickr8k", "one_shot_keywords.txt"))[0]
 
-    train_keywords_one_shot = keywords.filter_keep_keywords(
-        train_caption_keywords, one_shot_keyword_set)
+    one_shot_caption_keywords = keywords.filter_keep_keywords(
+        caption_keywords["train"], one_shot_keyword_set)
 
-    # remove one-shot keywords for background learning
-    train_keywords_background = keywords.filter_remove_keywords(
-        train_caption_keywords, one_shot_keyword_set)
+    missing_set = set(one_shot_keyword_set) - set(one_shot_caption_keywords[3])
+    if len(missing_set) > 0:
+        logging.log(
+            logging.INFO, "Flickr30k is missing one-shot keywords: {}".format(
+                missing_set))
 
-    # remove one-shot images for background learning
-    train_keywords_background = keywords.filter_remove_images(
-        train_keywords_background,
-        np.unique(train_keywords_one_shot[0]))
+    # flickr 30k background data selection and filtering
+    # ==================================================
+
+    background_caption_keywords = {}
+    background_caption_keywords_full = {}
+    for subset in subsets:
+        # get list of one-shot keywords and semantically similar keywords
+        one_shot_remove_words = keywords.find_similar_keywords(
+            caption_keywords[subset], one_shot_keyword_set,
+            threshold=FLAGS.similarity, use_lemma=True, spacy_model=FLAGS.spacy_model)
+
+        # remove one-shot keywords and associated images from filtered keywords
+        background_caption_keywords[subset] = keywords.filter_remove_keyword_images(
+            caption_keywords[subset], one_shot_remove_words)
+
+        # store full version of background data before removing long tail
+        background_caption_keywords_full[subset] = copy.deepcopy(
+            background_caption_keywords[subset])
+
+        # remove long tail of infrequent keywords by keeping only minimum required
+        # keyword-images for one-shot background training (e.g. with meta-learning)
+        keep_keywords = keywords.get_count_limited_keywords(
+            background_caption_keywords[subset],
+            min_occurence=FLAGS.min_occurence, use_lemma=True)
+        background_caption_keywords[subset] = keywords.filter_keep_keywords(
+            background_caption_keywords[subset], keep_keywords)
+
+    # write one-shot evaluation and background keyword-image set splits
+    # =================================================================
 
     # write keyword set splits to data directory
     if FLAGS.mode == "write" or FLAGS.mode == "both":
-        file_io.write_csv(
-            os.path.join("data", "splits", "flickr_one_shot", "test_one_shot_flickr30k.csv"),
-            *train_keywords_one_shot,
-            column_names=["image_uid", "caption_number", "keyword", "lemma"])
-        file_io.write_csv(
-            os.path.join("data", "splits", "flickr_one_shot", "train_background_flickr30k.csv"),
-            *train_keywords_background,
+        file_io.write_csv(  # one-shot evaluation benchmark split
+            os.path.join("data", "splits", "flickr30k", "one_shot_evaluation.csv"),
+            *one_shot_caption_keywords,
             column_names=["image_uid", "caption_number", "keyword", "lemma"])
 
-    # output keywords stats and distribution plots
+        for subset in subsets:
+            file_io.write_csv(  # background subset split, one-shot data removed
+                os.path.join(
+                    "data", "splits", "flickr30k", "background_{}.csv".format(subset)),
+                *background_caption_keywords[subset],
+                column_names=["image_uid", "caption_number", "keyword", "lemma"])
+
+            file_io.write_csv(  # background subset split (with tail), one-shot data removed
+                os.path.join(
+                    "data", "splits", "flickr30k", "background_full_{}.csv".format(subset)),
+                *background_caption_keywords_full[subset],
+                column_names=["image_uid", "caption_number", "keyword", "lemma"])
+
+    # output keywords stats and .. TODO(rpeloff) distribution plots 
     if FLAGS.mode == "statistics" or FLAGS.mode == "both":
-        pass  # TODO(rpeloff)
+        keywords.log_keyword_stats(one_shot_caption_keywords, "one_shot_evaluation")
+        for subset in subsets:
+            keywords.log_keyword_stats(
+                background_caption_keywords[subset], "background_{}".format(subset))
+            keywords.log_keyword_stats(
+                background_caption_keywords_full[subset], "background_full_{}".format(subset))
 
-    # save example images if specified
+    # save example one-shot evaluation images if specified
     if FLAGS.save_images == "one_shot" or FLAGS.save_images == "both":
+        save_keywords = np.asarray(one_shot_keyword_set)
+
+        if FLAGS.num_keywords is not None:
+            save_keyword_idx = np.random.choice(
+                np.arange(len(save_keywords)), FLAGS.num_keywords, replace=False)
+            save_keywords = save_keywords[save_keyword_idx]
+
         keywords.save_keyword_images(
-            train_keywords_one_shot,
-            os.path.join("data", "external", "flickr30k_images"),
-            one_shot_keyword_set, "figures/flickr_one_shot_flickr30k",
+            one_shot_caption_keywords,
+            os.path.join("data", "external", "flickr30k_images"), save_keywords,
+            os.path.join("figures", "flickr30k", "one_shot_keywords"),
             max_per_row=5, max_images=20)
 
-    # if FLAGS.save_images == "background" or FLAGS.save_images == "both":
-    #     keywords.save_keyword_images(
-    #         train_keywords_background,
-    #         os.path.join("data", "external", "flickr30k_images"),
-    #         np.delete(unique_keywords, rand_idx), "figures/flickr_background_flickr30k",
-    #         max_per_row=5, max_images=20)
+    # save example one-shot background images if specified
+    if FLAGS.save_images == "background" or FLAGS.save_images == "both":
+        save_keywords = np.unique(background_caption_keywords["train"][3])
+
+        if FLAGS.num_keywords is not None:
+            save_keyword_idx = np.random.choice(
+                np.arange(len(save_keywords)), FLAGS.num_keywords, replace=False)
+            save_keywords = save_keywords[save_keyword_idx]
+
+        keywords.save_keyword_images(
+            background_caption_keywords["train"],
+            os.path.join("data", "external", "flickr30k_images"), save_keywords,
+            os.path.join("figures", "flickr30k", "background_keywords"),
+            max_per_row=5, max_images=20)
 
 
 if __name__ == "__main__":

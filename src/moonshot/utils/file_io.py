@@ -20,7 +20,10 @@ from absl.app import logging
 
 def check_create_dir(path):
     """Check if a directory exists otherwise create it."""
-    dir_name = os.path.dirname(path)
+    if os.path.splitext(path)[1] == "":  # assume basename is directory not file
+        dir_name = path
+    else:
+        dir_name = os.path.dirname(path)
     if not os.path.exists(dir_name):
         os.makedirs(dir_name)
 
