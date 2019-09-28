@@ -11,6 +11,9 @@ from __future__ import division
 from __future__ import print_function
 
 
+import random
+
+
 from absl import flags
 from absl import logging
 
@@ -27,9 +30,8 @@ from moonshot.utils import multiprocess as mp
 FLAGS = flags.FLAGS
 
 
-# homophones identified with https://www.homophone.com ... :)
-ALL_STOP_WORDS = [
-    # tidigits
+# tidigits homophones identified with https://www.homophone.com ... :)
+TIDIGITS_STOP_WORDS = [
     "one", "won",
     "two", "to", "too",
     "three",
@@ -41,8 +43,6 @@ ALL_STOP_WORDS = [
     "nine",
     "oh", "owe", "ohs", "owes",
     "zero", "-xero-",
-    # flickr-audio
-    # ... no homophones :)
 ]
 
 
@@ -58,6 +58,7 @@ def process_caption_keywords(caption_set, spacy_model="en_core_web_lg"):
     """
     logging.log(logging.INFO, "Loading spacy model: {}".format(spacy_model))
 
+    random.seed(0)  # reproducible spacy results
     nlp = spacy.load(spacy_model)
 
     logging.log(logging.INFO, "Processing captions to select keywords ...")
@@ -74,8 +75,10 @@ def process_caption_keywords(caption_set, spacy_model="en_core_web_lg"):
                 not token.is_stop  # remove stopwords
                 and not token.is_punct  # remove punctuation
                 and not token.is_digit  # remove digits
-                # and not bool(sum(stop_word in token.text for stop_word in TIDIGITS_STOP_WORDS))  # remove tidigits
-                # and not bool(sum(stop_word in token.lemma_ for stop_word in TIDIGITS_STOP_WORDS))  # remove tidigits
+                and not token.is_oov  # remove out of vocabulary (e.g. spelling errors)
+                and nlp.vocab.has_vector(token.lemma_)  # make sure lemma is in vocabulary
+                and not bool(sum(stop_word in token.text for stop_word in TIDIGITS_STOP_WORDS))  # remove tidigits
+                and not bool(sum(stop_word in token.lemma_ for stop_word in TIDIGITS_STOP_WORDS))  # remove tidigits
             )
             if valid_token:
                 keywords.append(token.text)
@@ -202,6 +205,63 @@ def filter_remove_images(keywords_set, image_uid_list):
     return tuple(x[valid_idx] for x in keywords_set)
 
 
+def filter_remove_keyword_images(keywords_set, keyword_list, use_lemma=True):
+    """Filter keyword-image pairs removing all images with keywords in the specified list.
+
+    NOTE: this should be used instead of `filter_remove_images` to remove all
+    image instances associated with remove keyword, including pairs with
+    keywords not in the remove keyword list.
+    """
+    logging.log(
+        logging.INFO, "Filtering keyword-image pairs (by image remove list)")
+
+    keyword_data = keywords_set[3] if use_lemma else keywords_set[2]
+    image_idx = np.where(np.isin(keyword_data, keyword_list))[0]
+
+    remove_uids = np.unique(keywords_set[0][image_idx])
+
+    return filter_remove_images(keywords_set, remove_uids)
+
+
+def find_similar_keywords(keywords_set, keyword_list, threshold=0.9,
+                          use_lemma=True, spacy_model="en_core_web_lg"):
+    """Find keywords semantically similar to those in the keyword list."""
+    logging.log(logging.INFO, "Loading spacy model: {}".format(spacy_model))
+
+    random.seed(0)  # reproducible spacy results
+    nlp = spacy.load(spacy_model)
+
+    logging.log(logging.INFO, "Finding semantically similar keywords ...")
+
+    keyword_tokens = list(doc[0] for doc in nlp.pipe(list(keyword_list)))
+    for token in keyword_tokens:
+        assert token.has_vector, "Token {} has no vector!".format(token)
+
+    similar_keywords = []
+    keyword_data = np.unique(keywords_set[3] if use_lemma else keywords_set[2])
+    for doc in nlp.pipe(keyword_data.tolist()):  # process captions in parallel
+        for token in doc:
+            if token.has_vector:
+                for keyword_token in keyword_tokens:
+                    similarity = token.similarity(keyword_token)
+
+                    if similarity >= threshold:
+                        similar_keywords.append(token.text)
+
+                        if similarity < 1.0 and "debug" in FLAGS and FLAGS.debug:
+                            logging.log(
+                                logging.DEBUG,
+                                "Found token '{}' similar to keyword '{}': score={}".format(
+                                    token.text, keyword_token.text, similarity))
+
+    similar_keywords = np.unique(similar_keywords)
+    logging.log(
+        logging.INFO, "Found {} semantically similar keywords".format(
+            len(similar_keywords) - len(keyword_list)))
+
+    return similar_keywords
+
+
 def filter_flickr_audio_by_keywords(faudio_set, keywords_set):
     """Use keywords to filter (and lemmatise) isolated spoken words.
 
@@ -284,12 +344,30 @@ def get_count_limited_keywords(keywords_set, min_occurence=10, **kwargs):
     return limited_keyword_list
 
 
-def log_keyword_stats(keywords_set):
-    """TODO(rpeloff)"""
+def log_keyword_stats(keywords_set, subset="train"):
+    """Log some statitics on the specified keyword set."""
+    logging.log(
+        logging.INFO, "Logging keyword set statistics: {}".format(subset))
+
     unique_keywords, keyword_counts = get_unique_keywords_counts(keywords_set)
+    argsort_idx = np.argsort(keyword_counts)
+
     logging.log(
         logging.INFO,
-        ("Unique keyword occurence statistics: "
+        "\tTotal keyword-image pairs (redundant; only useful for Flickr-Audio): {}".format(
+            len(keywords_set[0])))
+
+    logging.log(
+        logging.INFO,
+        "\tNumber of unique keyword-image pairs: {}".format(keyword_counts.sum()))
+
+    logging.log(
+        logging.INFO,
+        "\tNumber of unique images: {}".format(len(np.unique(keywords_set[0]))))
+
+    logging.log(
+        logging.INFO,
+        ("\tUnique keyword occurence statistics: "
          "count={:d} min={:.0f} max={:.0f} mean={:.3f} std={:.3f} "
          "25%={:.1f} 50%={:.1f} 75%={:.1f} 95%={:.1f}").format(
              len(unique_keywords), keyword_counts.min(), keyword_counts.max(),
@@ -298,6 +376,21 @@ def log_keyword_stats(keywords_set):
              np.percentile(keyword_counts, 50.0),
              np.percentile(keyword_counts, 75.0),
              np.percentile(keyword_counts, 95.0)))
+
+    logging.log(logging.INFO, "\tBottom 15 occuring keywords:")
+    for i in range(15):
+        logging.log(
+            logging.INFO, "\t{}: {} ({})".format(
+                i, unique_keywords[argsort_idx[i]],
+                keyword_counts[argsort_idx[i]]))
+
+    logging.log(logging.INFO, "\tTop 15 occuring keywords:")
+    for i in range(15):
+        index = len(argsort_idx) - 15 + i
+        logging.log(
+            logging.INFO, "\t{}: {} ({})".format(
+                index, unique_keywords[argsort_idx[index]],
+                keyword_counts[argsort_idx[index]]))
 
 
 def plot_keyword_count_distribution(keywords_set, output_dir, filename):
