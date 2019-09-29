@@ -1,10 +1,10 @@
-"""Select Flickr 8k keyword-image pairs for one-shot learning and background training.
+"""Select MSCOCO keyword-image pairs for one-shot background training.
 
-Write one-shot data and splits to data/splits/flickr_one_shot:
-`python3 src/moonshot/features/make_flickr8k_one_shot.py --mode write`
+Write background split to data/splits/mscoco_one_shot:
+`python3 src/moonshot/features/make_mscoco_background.py --mode write`
 
 Debug:
-`python3 -m pdb src/moonshot/features/make_flickr8k_one_shot.py --debug --mode write`
+`python3 -m pdb src/moonshot/features/make_mscoco_background.py --debug --mode write`
 
 Author: Ryan Eloff
 Contact: ryan.peter.eloff@gmail.com
@@ -29,9 +29,8 @@ from absl import logging
 import numpy as np
 
 
-from moonshot.data.datasets import flickr8k
-from moonshot.data.datasets import flickraudio
-from moonshot.features import keywords
+from moonshot.data import mscoco
+from moonshot.preprocessing import keywords
 from moonshot.utils import file_io
 
 
@@ -41,11 +40,9 @@ flags.DEFINE_integer("min_captions", 2, "minimum number of image captions for ke
                      lower_bound=1, upper_bound=5)
 flags.DEFINE_integer("min_occurence", 20, "minimum number of unique images per keyword",
                      lower_bound=1)
-flags.DEFINE_integer("one_shot_classes", 50, "number of one-shot keyword classes to random sample",
-                     lower_bound=1)
 flags.DEFINE_float("similarity", 0.85, "threshold for finding semantically similar keywords")
 flags.DEFINE_enum("save_images", None, ["one_shot", "background", "both"],
-                  "save a number of example images per keyword from specified sets")
+                  "save a number of example images per keyword for specified sets")
 flags.DEFINE_integer("num_keywords", None, "number of keywords to sample for saving example images",
                      lower_bound=1)
 flags.DEFINE_enum("mode", None, ["write", "statistics", "both"],
@@ -65,27 +62,22 @@ def main(argv):
         logging.set_verbosity(logging.DEBUG)
         logging.log(logging.DEBUG, "Running in debug mode")
 
-    # get flickr 8k text captions
-    caption_corpus = flickr8k.load_flickr8k_captions(
-        os.path.join("data", "external", "flickr8k_text"),
-        splits_dir=os.path.join("data", "splits", "flickr8k"))
+    # get mscoco text captions with flickr 30k removed
+    subsets = ["train", "dev"]  # test has no captions (AFAIK)
+    caption_files = [
+        "captions_train2017.json",
+        "captions_val2017.json"]
 
-    subsets = ["train", "dev", "test"]
-    caption_corpus = {
-        subset: caption_set for (subset, caption_set)
-        in zip(subsets, caption_corpus)}
+    caption_corpus = {}
+    for subset, caption_file in zip(subsets, caption_files):
+        caption_corpus[subset] = mscoco.load_mscoco_captions(
+            os.path.join("data", "external", "mscoco", "annotations"),
+            caption_file=caption_file,
+            remove_flickr_path=os.path.join(
+                "data", "splits", "mscoco", "remove_flickr30k.txt"))
 
-    # get flickr-audio data
-    faudio_uid_dict = flickraudio.fetch_isolated_word_lists(
-        os.path.join("data", "processed", "flickr_audio", "mfcc"))
-
-    faudio_data = {}
-    for subset in subsets:
-        faudio_data[subset] = flickraudio.extract_all_uid_metadata(
-            faudio_uid_dict[subset])
-
-    # flickr 8k caption keyword filtering
-    # ===================================
+    # mscoco caption keyword filtering
+    # ================================
 
     caption_keywords = {}
     for subset in subsets:
@@ -97,35 +89,24 @@ def main(argv):
         caption_keywords[subset] = keywords.filter_keyword_quality(
             caption_keywords[subset], min_caption_occurence=FLAGS.min_captions)
 
-    # flickr 8k one-shot benchmark evaluation data selection
-    # ======================================================
+    # mscoco one-shot benchmark evaluation data selection
+    # ===================================================
 
-    # select random classes for one-shot learning evaluation benchmark
-    # from keywords paired with at least 20 and no more than 100 unique images
+    # load one-shot keywords selected from flickr 8k keyword-image pairs
+    one_shot_keyword_set = file_io.read_csv(
+        os.path.join("data", "splits", "flickr8k", "one_shot_keywords.txt"))[0]
 
-    # minimum required keyword-images for one-shot learning and evaluation
-    keep_min_keywords = keywords.get_count_limited_keywords(
-        caption_keywords["train"], min_occurence=20, use_lemma=True)
-
-    # limit the effect on background data, specifically flickr-audio words
-    remove_max_keywords = keywords.get_count_limited_keywords(
-        caption_keywords["train"], min_occurence=100, use_lemma=True)
-
-    one_shot_keyword_range = np.asarray(  # sort because of undefined set order
-        list(sorted(set(keep_min_keywords) - set(remove_max_keywords))))
-
-    np.random.seed(42)
-    rand_idx = np.random.choice(
-        np.arange(len(one_shot_keyword_range)), FLAGS.one_shot_classes, replace=False)
-
-    one_shot_keyword_set = one_shot_keyword_range[rand_idx]
-
-    # fetch keyword-image pairs for one-shot evaluation benchmark
     one_shot_caption_keywords = keywords.filter_keep_keywords(
         caption_keywords["train"], one_shot_keyword_set)
 
-    # flickr 8k background data selection and filtering
-    # =================================================
+    missing_set = set(one_shot_keyword_set) - set(one_shot_caption_keywords[3])
+    if len(missing_set) > 0:
+        logging.log(
+            logging.INFO, "MSCOCO is missing one-shot keywords: {}".format(
+                missing_set))
+
+    # mscoco background data selection and filtering
+    # ==============================================
 
     background_caption_keywords = {}
     background_caption_keywords_full = {}
@@ -151,49 +132,30 @@ def main(argv):
         background_caption_keywords[subset] = keywords.filter_keep_keywords(
             background_caption_keywords[subset], keep_keywords)
 
-    # flickr-audio alignment with background and one-shot evaluation data
-    # ===================================================================
-
-    # align flickr-audio spoken word image pairs for one-shot/background learning
-    # by removing pairs that do not correspond to a keyword-image pair
-    _, one_shot_caption_keywords = keywords.filter_flickr_audio_by_keywords(
-        faudio_data["train"], one_shot_caption_keywords)
-
-    for subset in subsets:
-        _, background_caption_keywords[subset] = keywords.filter_flickr_audio_by_keywords(
-            faudio_data[subset], background_caption_keywords[subset])
-
-        _, background_caption_keywords_full[subset] = keywords.filter_flickr_audio_by_keywords(
-            faudio_data[subset], background_caption_keywords_full[subset])
-
     # write one-shot evaluation and background keyword-image set splits
     # =================================================================
 
     # write keyword set splits to data directory
     if FLAGS.mode == "write" or FLAGS.mode == "both":
-        file_io.write_csv(  # keyword list
-            os.path.join("data", "splits", "flickr8k", "one_shot_keywords.txt"),
-            one_shot_keyword_set)
-
         file_io.write_csv(  # one-shot evaluation benchmark split
-            os.path.join("data", "splits", "flickr8k", "one_shot_evaluation.csv"),
+            os.path.join("data", "splits", "mscoco", "one_shot_evaluation.csv"),
             *one_shot_caption_keywords,
             column_names=["image_uid", "caption_number", "keyword", "lemma"])
 
         for subset in subsets:
             file_io.write_csv(  # background subset split, one-shot data removed
                 os.path.join(
-                    "data", "splits", "flickr8k", "background_{}.csv".format(subset)),
+                    "data", "splits", "mscoco", "background_{}.csv".format(subset)),
                 *background_caption_keywords[subset],
                 column_names=["image_uid", "caption_number", "keyword", "lemma"])
 
             file_io.write_csv(  # background subset split (with tail), one-shot data removed
                 os.path.join(
-                    "data", "splits", "flickr8k", "background_full_{}.csv".format(subset)),
+                    "data", "splits", "mscoco", "background_full_{}.csv".format(subset)),
                 *background_caption_keywords_full[subset],
                 column_names=["image_uid", "caption_number", "keyword", "lemma"])
 
-    # output keywords stats and .. TODO(rpeloff) distribution plots 
+    # output keywords stats and .. TODO(rpeloff) distribution plots
     if FLAGS.mode == "statistics" or FLAGS.mode == "both":
         keywords.log_keyword_stats(one_shot_caption_keywords, "one_shot_evaluation")
         for subset in subsets:
@@ -213,8 +175,8 @@ def main(argv):
 
         keywords.save_keyword_images(
             one_shot_caption_keywords,
-            os.path.join("data", "external", "flickr8k_images"), save_keywords,
-            os.path.join("figures", "flickr8k", "one_shot_keywords"),
+            os.path.join("data", "external", "mscoco", "train2017"), save_keywords,
+            os.path.join("figures", "mscoco", "one_shot_keywords"),
             max_per_row=5, max_images=20)
 
     # save example one-shot background images if specified
@@ -228,8 +190,8 @@ def main(argv):
 
         keywords.save_keyword_images(
             background_caption_keywords["train"],
-            os.path.join("data", "external", "flickr8k_images"), save_keywords,
-            os.path.join("figures", "flickr8k", "background_keywords"),
+            os.path.join("data", "external", "mscoco", "train2017"), save_keywords,
+            os.path.join("figures", "mscoco", "background_keywords"),
             max_per_row=5, max_images=20)
 
 

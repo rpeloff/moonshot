@@ -77,8 +77,9 @@ def process_caption_keywords(caption_set, spacy_model="en_core_web_lg"):
                 and not token.is_digit  # remove digits
                 and not token.is_oov  # remove out of vocabulary (e.g. spelling errors)
                 and nlp.vocab.has_vector(token.lemma_)  # make sure lemma is in vocabulary
-                and not bool(sum(stop_word in token.text for stop_word in TIDIGITS_STOP_WORDS))  # remove tidigits
-                and not bool(sum(stop_word in token.lemma_ for stop_word in TIDIGITS_STOP_WORDS))  # remove tidigits
+                # remove tidigits
+                and not bool(sum(stop_word in token.text for stop_word in TIDIGITS_STOP_WORDS))
+                and not bool(sum(stop_word in token.lemma_ for stop_word in TIDIGITS_STOP_WORDS))
             )
             if valid_token:
                 keywords.append(token.text)
@@ -393,10 +394,12 @@ def log_keyword_stats(keywords_set, subset="train"):
                 keyword_counts[argsort_idx[index]]))
 
 
+# TODO(rpeloff) complete function
 def plot_keyword_count_distribution(keywords_set, output_dir, filename):
     """TODO(rpeloff) document and move to plotting (?)"""
-    import matplotlib.pyplot as plt
     import os
+    import matplotlib.pyplot as plt
+    from moonshot.utils import plotting
 
     unique_keywords, keyword_counts = get_unique_keywords_counts(keywords_set)
 
@@ -404,17 +407,18 @@ def plot_keyword_count_distribution(keywords_set, output_dir, filename):
     plt.barh(
         unique_keywords[np.argsort(keyword_counts)], keyword_counts[np.argsort(keyword_counts)])
     plt.title("Unique Keyword Occurences")
-    plt.tight_layout()
-    
-    plt.savefig(os.path.join(output_dir, "{}.png".format(filename)))
+
+    plotting.save_figure(filename, path=output_dir, tight_layout=True)
 
 
+# TODO(rpeloff) complete function
 def save_keyword_images(keywords_set, images_dir, keyword_list, output_dir,
                         max_per_row=5, max_images=20):
     """TODO(rpeloff) document and move to plotting (?)"""
+    import os
     import matplotlib.pyplot as plt
     from moonshot.utils import image_utils
-    import os
+    from moonshot.utils import plotting
 
     file_io.check_create_dir(output_dir)
 
@@ -442,5 +446,5 @@ def save_keyword_images(keywords_set, images_dir, keyword_list, output_dir,
             plt.title(uid)
             plt.axis("off")
 
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, "{}_filtered_images.png".format(keyword)))
+        plotting.save_figure("{}_filtered_images.png".format(keyword),
+                             path=output_dir, tight_layout=True)
