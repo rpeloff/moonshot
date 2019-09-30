@@ -20,7 +20,8 @@ def load_image_array(image_path):
     return np.asarray(imread(image_path))
 
 
-# TODO(rpeloff) old code, remove if sure not using this
+# TODO(rpeloff) old code, remove if not using?
+
 # def resize_square_crop(image_arr, size=(224, 224), resample=Image.LANCZOS):
 #     h, w, _ = image_arr.shape
 #     short_edge = min(w, h)

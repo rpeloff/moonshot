@@ -87,36 +87,12 @@ def load_flickr8k_captions(captions_dir, load_lemma=False,
     return train, val, test
 
 
-def fetch_flickr8k_image_paths(images_dir, captions_dir):
-    """Fetch Flickr 8K image paths corresponding to the caption corpus splits."""
-    train, val, test = None, None, None
-
-    split_dict = load_flickr8k_splits(captions_dir)
-
-    image_paths = np.asarray([
-        os.path.join(images_dir, name) for name in os.listdir(images_dir)])
-    image_uids = np.asarray([
-        os.path.splitext(os.path.split(path)[-1])[0] for path in image_paths])
-
-    train_idx = np.isin(image_uids, split_dict["train"])
-    val_idx = np.isin(image_uids, split_dict["dev"])
-    test_idx = np.isin(image_uids, split_dict["test"])
-
-    train = (image_uids[train_idx], image_paths[train_idx])
-    val = (image_uids[val_idx], image_paths[val_idx])
-    test = (image_uids[test_idx], image_paths[test_idx])
-
-    return train, val, test
-
-
-def fetch_flickr_audio_image_paths(images_dir, faudio_uids):
-    """Fetch Flickr 8K image paths corresponding to a list of Flickr-Audio UIDs."""
-    image_uids, image_paths = [], []
-    for uid in faudio_uids:
-        uid_parts = uid.split("_")
-        image_uids.append("{}_{}".format(uid_parts[2], uid_parts[3]))
+def fetch_image_paths(images_dir, image_uids):
+    """Fetch Flickr 8K image paths corresponding to the list of image UIDs."""
+    image_paths = []
+    for uid in image_uids:
         image_paths.append(
-            os.path.join(images_dir, "{}.jpg".format(image_uids[-1])))
+            os.path.join(images_dir, "{}.jpg".format(uid)))
         assert os.path.exists(image_paths[-1])  # lazy check :)
 
-    return image_uids, image_paths
+    return image_paths
