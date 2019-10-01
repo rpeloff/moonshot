@@ -80,7 +80,7 @@ elif [ "${run_target}" == "baselines" ]; then
         --data-dir ${FLICKR_30K_IMAGE_DIR} \
         --data-dir ${FLICKR_30K_TEXT_DIR} \
         --data-dir ${MSCOCO_DIR} \
-        --image reloff/ml-research:tf-2.0.0-rc1-py36-cuda100 \
+        --image reloff/ml-research:tf-2.0.0-py36-cuda100 \
         --nvidia-gpu \
         --jupyter lab \
         --jupyter-port 8888 \
@@ -98,7 +98,7 @@ elif [ "${run_target}" == "experiment" ]; then
         --data-dir ${FLICKR_30K_IMAGE_DIR} \
         --data-dir ${FLICKR_30K_TEXT_DIR} \
         --data-dir ${MSCOCO_DIR} \
-        --image reloff/ml-research:tf-2.0.0-rc1-py36-cuda100 \
+        --image reloff/ml-research:tf-2.0.0-py36-cuda100 \
         --nvidia-gpu \
         --jupyter lab \
         --jupyter-port 8888 \
@@ -115,7 +115,7 @@ elif [ "${run_target}" == "test" ] || [ "${run_target}" == "test_debug" ]; then
         --data-dir ${FLICKR_30K_IMAGE_DIR} \
         --data-dir ${FLICKR_30K_TEXT_DIR} \
         --data-dir ${MSCOCO_DIR} \
-        --image reloff/ml-research:tf-2.0.0-rc1-py36-cuda100 \
+        --image reloff/ml-research:tf-2.0.0-py36-cuda100 \
         --nvidia-gpu \
         --sudo \
         ${args}
