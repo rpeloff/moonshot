@@ -29,24 +29,28 @@ class FlickrVision(base.Experiment):
     """TODO(rpeloff).
     """
 
-    def __init__(self, images_dir, splits_dir=os.path.join("data", "splits", "flickr8k")):
-        super(FlickrVision, self).__init__()
+    def __init__(self, images_dir, splits_dir=os.path.join("data", "splits", "flickr8k"), **kwargs):
+        super(FlickrVision, self).__init__(**kwargs)
 
+        # load Flickr 8k one-shot evaluation keywords set
         one_shot_keywords_set = file_io.read_csv(
             os.path.join(splits_dir, "one_shot_evaluation.csv"),
             skip_first=True)
         self.one_shot_keywords_set = tuple(  # convert to numpy arrays
             np.asarray(x) for x in one_shot_keywords_set)
 
+        # load paths of Flickr 8k images
         one_shot_image_paths = flickr8k.fetch_image_paths(
             images_dir, self.one_shot_keywords_set[0])
         self.one_shot_image_paths = np.asarray(one_shot_image_paths)
 
+        # get unique one-shot keywords and class label lookup dict
         self.one_shot_keywords = np.unique(self.one_shot_keywords_set[3])
 
         self.keyword_id_lookup = {
             keyword: idx for idx, keyword in enumerate(self.one_shot_keywords)}
 
+        # get lookup for unique image indices per class label
         self.class_unique_indices = {}
         for os_cls in self.one_shot_keywords:
             os_cls_label = self.keyword_id_lookup[os_cls]
@@ -58,18 +62,24 @@ class FlickrVision(base.Experiment):
                 cls_imgs, return_index=True)
 
             self.class_unique_indices[os_cls_label] = cls_idx[unique_image_idx]
+        
+        # get lookup for valid keywords per unique image uid
+        self.image_keywords = {}
+        for image_uid in np.unique(self.one_shot_keywords_set[0]):
+            image_idx = np.where(self.one_shot_keywords_set[0] == image_uid)[0]
+            self.image_keywords[image_uid] = np.unique(
+                self.one_shot_keywords_set[3][image_idx])
 
-        self.rng = np.random.Generator(np.random.PCG64(42))
-
-    def _sample_episode(self, L, K, N):
+    def _sample_episode(self, L, K, N, episode_labels=None):
 
         # sample episode learning task (defined by L-way classes)
-        ep_labels = self.rng.choice(
-            np.arange(len(self.one_shot_keywords)), L, replace=False)
+        if episode_labels is None:
+            episode_labels = self.rng.choice(
+                np.arange(len(self.one_shot_keywords)), L, replace=False)
 
         # sample learning examples from episode task
         x_train_idx, y_train = [], []
-        for ep_label in ep_labels:
+        for ep_label in episode_labels:
             rand_cls_idx = self.rng.choice(
                 self.class_unique_indices[ep_label], K, replace=False)
             x_train_idx.extend(rand_cls_idx)
@@ -77,8 +87,8 @@ class FlickrVision(base.Experiment):
 
         # sample evaluation examples from episode task
         ep_test_labels_idx = self.rng.choice(
-            np.arange(len(ep_labels)), N, replace=True)
-        ep_test_labels = ep_labels[ep_test_labels_idx]
+            np.arange(len(episode_labels)), N, replace=True)
+        ep_test_labels = episode_labels[ep_test_labels_idx]
 
         x_test_idx, y_test = [], []
         for ep_label in ep_test_labels:

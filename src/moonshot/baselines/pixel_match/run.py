@@ -46,6 +46,7 @@ flags.DEFINE_boolean("augment_crops", False, "train and test on random scale aug
 flags.DEFINE_integer("num_crops", 10, "number of random augmented crops per image")
 flags.DEFINE_list("test_scales", [224, 256, 384, 480, 640],
                   "test images will be random resized to have short edge in this set")
+flags.DEFINE_boolean("debug", False, "debug mode")
 
 # required flags
 # flags.mark_flag_as_required("...")
@@ -82,6 +83,8 @@ def resize_square_crop(image, size=224):
     # resize image
     resize_hw = (size * h/short_edge, size * w/short_edge)
     image = tf.image.resize(image, resize_hw, method="lanczos3")
+    image = image - tf.reduce_min(image)
+    image = image / tf.reduce_max(image)
     # center square crop
     image_shape = tf.shape(image)
     h, w = image_shape[0], image_shape[1]
@@ -97,6 +100,8 @@ def load_and_preprocess_image(image_path, augment_crops=True, num_crops=10,
     # read and decode image
     image = tf.io.read_file(image_path)
     image = tf.image.decode_jpeg(image, channels=3)
+    # scale image to range [0, 1] expected by tf.image functions
+    image = tf.cast(image, tf.float32) / 255.
     # random crop images for testing
     if augment_crops:
         crop_images = []
@@ -106,9 +111,9 @@ def load_and_preprocess_image(image_path, augment_crops=True, num_crops=10,
         image = tf.stack(crop_images)
     else:
         image = resize_square_crop(image, **crop_kwargs)
-    # scale pixels between -1 and 1 sample-wise
+    # scale image from [0, 1] to range [-1, 1]
     if normalise:
-        image /= 127.5
+        image *= 2.
         image -= 1.
     return image
 
@@ -124,6 +129,9 @@ def main(argv):
     del argv  # unused
 
     logging.log(logging.INFO, "Logging application {}".format(__file__))
+    if FLAGS.debug:
+        logging.set_verbosity(logging.DEBUG)
+        logging.log(logging.DEBUG, "Running in debug mode")
 
     pixel_model = pixel_match.PixelMatch(metric="cosine", preprocess=None)
 

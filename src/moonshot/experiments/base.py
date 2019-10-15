@@ -32,33 +32,48 @@ class Experiment(abc.ABC):
     - reset experiment
     """
 
-    def __init__(self):
+    def __init__(self, num_episodes=None, seed=42):
+        self.num_episodes = num_episodes  # TODO: used?
+        self.seed = seed
+
         self.curr_episode_train = None
         self.curr_episode_test = None
 
+        # random number generator for this experiment
+        self.rng = np.random.Generator(np.random.PCG64(self.seed))
+
     def sample_episode(self, *args, **kwargs):
-        # TODO: handle episode update logic and check for final episode
+        # TODO: handle episode update logic and check for final episode?
         return self._sample_episode(*args, **kwargs)
+
+    def batch_generator(self, batch_size, *args, **kwargs):
+        for _ in range(batch_size):
+            self.sample_episode(*args, **kwargs)
+            yield (self.learning_samples, self.evaluation_samples)
 
     def batch_episodes(self, batch_size, *args, **kwargs):
         # train across tasks e.g.
         # for task in zip(*train_b, *test_b): train_x, train_y, test_x, test_y = task
 
-        train_batch, test_batch = [], []
-        for _ in range(batch_size):
+        # TODO remove if sure replacing with below
+        # train_batch, test_batch = [], []
+        # for _ in range(batch_size):
 
-            self.sample_episode(*args, **kwargs)
+        #     self.sample_episode(*args, **kwargs)
 
-            train = self.learning_samples
-            test = self.evaluation_samples
+        #     train = self.learning_samples
+        #     test = self.evaluation_samples
 
-            train_batch.append(train)
-            test_batch.append(test)
+        #     train_batch.append(train)
+        #     test_batch.append(test)
 
-        train_batch = tuple(np.stack(x) for x in zip(*train_batch))
-        test_batch = tuple(np.stack(x) for x in zip(*test_batch))
+        # train_batch = tuple(np.stack(x) for x in zip(*train_batch))
+        # test_batch = tuple(np.stack(x) for x in zip(*test_batch))
 
-        return train_batch, test_batch
+        # return train_batch, test_batch
+
+        # train across tasks e.g. `for task in batch: train, test = task`
+        return tuple(self.batch_generator(batch_size, *args, **kwargs))
 
     @property
     def learning_samples(self):
@@ -87,7 +102,7 @@ class Experiment(abc.ABC):
         """TODO"""
 
     def evaluate(self, task, action):
-        """TODO Store and evaluate an agents action for specified evaluation task ?"""
+        """TODO: Store & evaluate agents actions for an evaluation task?"""
 
     def reset(self):
-        """TODO Reset experiment ?"""
+        """TODO: Reset experiment?"""

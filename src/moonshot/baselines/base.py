@@ -15,10 +15,14 @@ import abc
 import copy
 
 
+from absl import flags
 from absl import logging
 
 
 import numpy as np
+
+
+FLAGS = flags.FLAGS
 
 
 def majority_vote(labels):
@@ -26,6 +30,10 @@ def majority_vote(labels):
     counts = np.bincount(labels)
     max_idx = np.where(counts == np.max(counts))[0]
     if len(max_idx) > 1:  # choose random from tied majority labels
+        if "debug" in FLAGS and FLAGS.debug:
+            logging.log(
+                logging.DEBUG,
+                "Choosing randomly from tied labels: {}".format(np.asarray(labels[max_idx])))
         majority_label = max_idx[
             np.random.choice(len(max_idx), size=1, replace=False)[0]]
     else:

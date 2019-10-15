@@ -88,16 +88,17 @@ def extract_all_uid_metadata(uid_list):
         zip(*map(extract_uid_metadata, uid_list)))
 
 
-def load_keyword_splits_csv(csv_path):
-    """Load (UID, keyword) pairs from a specified set split csv.
+# TODO: remove old code if not using
+# def load_keyword_splits_csv(csv_path):
+#     """Load (UID, keyword) pairs from a specified set split csv.
 
-    `csv_path` should reference 'background_train.csv',
-    'background_validation.csv' or 'one_shot_test.csv'.
-    """
-    with open(csv_path, "r", newline="") as csvfile:
-        csv_reader = csv.DictReader(csvfile)
-        faudio_uids, faudio_keywords = [], []
-        for row in csv_reader:
-            faudio_uids.append(row["flickr_audio_uid"])
-            faudio_keywords.append(row["keyword"])
-    return faudio_uids, faudio_keywords
+#     `csv_path` should reference 'background_train.csv',
+#     'background_validation.csv' or 'one_shot_test.csv'.
+#     """
+#     with open(csv_path, "r", newline="") as csvfile:
+#         csv_reader = csv.DictReader(csvfile)
+#         faudio_uids, faudio_keywords = [], []
+#         for row in csv_reader:
+#             faudio_uids.append(row["flickr_audio_uid"])
+#             faudio_keywords.append(row["keyword"])
+#     return faudio_uids, faudio_keywords
