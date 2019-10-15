@@ -234,7 +234,8 @@ def find_similar_keywords(keywords_set, keyword_list, threshold=0.9,
 
     logging.log(logging.INFO, "Finding semantically similar keywords ...")
 
-    keyword_tokens = list(doc[0] for doc in nlp.pipe(list(keyword_list)))
+    keyword_list = [str(keyword) for keyword in keyword_list]
+    keyword_tokens = list(doc[0] for doc in nlp.pipe(keyword_list))
     for token in keyword_tokens:
         assert token.has_vector, "Token {} has no vector!".format(token)
 

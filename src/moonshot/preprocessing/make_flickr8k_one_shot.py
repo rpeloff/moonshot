@@ -1,10 +1,10 @@
 """Select Flickr 8k keyword-image pairs for one-shot learning and background training.
 
 Write one-shot data and splits to data/splits/flickr_one_shot:
-`python3 src/moonshot/features/make_flickr8k_one_shot.py --mode write`
+`python3 src/moonshot/preprocessing/make_flickr8k_one_shot.py --mode write`
 
 Debug:
-`python3 -m pdb src/moonshot/features/make_flickr8k_one_shot.py --debug --mode write`
+`python3 -m pdb src/moonshot/preprocessing/make_flickr8k_one_shot.py --debug --mode write`
 
 Author: Ryan Eloff
 Contact: ryan.peter.eloff@gmail.com
@@ -120,6 +120,19 @@ def main(argv):
 
     one_shot_keyword_set = one_shot_keyword_range[rand_idx]
 
+    # select 30 of the random keywords throwing away ambigious terms
+    manual_keywords = np.array([
+        "asian", "basketball", "bench", "bird", "blonde", "boat", "car",
+        "cliff", "climber", "dance", "fire", "floor", "ground", "guitar",
+        "hair", "hill", "horse", "obstacle", "paddle", "path", "purple", "rope",
+        "sand", "sled", "snowboard", "splash", "suit", "surfboard", "throw",
+        "vest"])
+
+    for keyword in manual_keywords:
+        assert keyword in one_shot_keyword_set
+
+    one_shot_keyword_set = manual_keywords
+
     # fetch keyword-image pairs for one-shot evaluation benchmark
     one_shot_caption_keywords = keywords.filter_keep_keywords(
         caption_keywords["train"], one_shot_keyword_set)
@@ -156,15 +169,19 @@ def main(argv):
 
     # align flickr-audio spoken word image pairs for one-shot/background learning
     # by removing pairs that do not correspond to a keyword-image pair
-    _, one_shot_caption_keywords = keywords.filter_flickr_audio_by_keywords(
+    faudio_one_shot_data, one_shot_caption_keywords = keywords.filter_flickr_audio_by_keywords(
         faudio_data["train"], one_shot_caption_keywords)
 
+    faudio_background_data = {}
+    faudio_background_data_full = {}
     for subset in subsets:
-        _, background_caption_keywords[subset] = keywords.filter_flickr_audio_by_keywords(
-            faudio_data[subset], background_caption_keywords[subset])
+        faudio_background_data[subset], background_caption_keywords[subset] = (
+            keywords.filter_flickr_audio_by_keywords(
+                faudio_data[subset], background_caption_keywords[subset]))
 
-        _, background_caption_keywords_full[subset] = keywords.filter_flickr_audio_by_keywords(
-            faudio_data[subset], background_caption_keywords_full[subset])
+        faudio_background_data_full[subset], background_caption_keywords_full[subset] = (
+            keywords.filter_flickr_audio_by_keywords(
+                faudio_data[subset], background_caption_keywords_full[subset]))
 
     # write one-shot evaluation and background keyword-image set splits
     # =================================================================
@@ -180,18 +197,33 @@ def main(argv):
             *one_shot_caption_keywords,
             column_names=["image_uid", "caption_number", "keyword", "lemma"])
 
+        file_io.write_csv(  # aligned flickr-audio uids for one-shot evaluation
+            os.path.join("data", "splits", "flickr8k",
+                         "faudio_one_shot_evaluation.txt"),
+            faudio_one_shot_data[0])
+
         for subset in subsets:
             file_io.write_csv(  # background subset split, one-shot data removed
-                os.path.join(
-                    "data", "splits", "flickr8k", "background_{}.csv".format(subset)),
+                os.path.join("data", "splits", "flickr8k",
+                             "background_{}.csv".format(subset)),
                 *background_caption_keywords[subset],
                 column_names=["image_uid", "caption_number", "keyword", "lemma"])
 
             file_io.write_csv(  # background subset split (with tail), one-shot data removed
-                os.path.join(
-                    "data", "splits", "flickr8k", "background_full_{}.csv".format(subset)),
+                os.path.join("data", "splits", "flickr8k",
+                             "background_full_{}.csv".format(subset)),
                 *background_caption_keywords_full[subset],
                 column_names=["image_uid", "caption_number", "keyword", "lemma"])
+
+            file_io.write_csv(  # aligned flickr-audio uids for background split
+                os.path.join("data", "splits", "flickr8k",
+                             "faudio_background_{}.txt".format(subset)),
+                faudio_background_data[subset][0])
+
+            file_io.write_csv(  # aligned flickr-audio uids for background split
+                os.path.join("data", "splits", "flickr8k",
+                             "faudio_background_full_{}.txt".format(subset)),
+                faudio_background_data_full[subset][0])
 
     # output keywords stats and .. TODO(rpeloff) distribution plots
     if FLAGS.mode == "statistics" or FLAGS.mode == "both":

@@ -1,10 +1,10 @@
 """Select Flickr 30k keyword-image pairs for one-shot background training.
 
 Write background split to data/splits/flickr_one_shot:
-`python3 src/moonshot/features/make_flickr30k_background.py --mode write`
+`python3 src/moonshot/preprocessing/make_flickr30k_background.py --mode write`
 
 Debug:
-`python3 -m pdb src/moonshot/features/make_flickr30k_background.py --debug --mode write`
+`python3 -m pdb src/moonshot/preprocessing/make_flickr30k_background.py --debug --mode write`
 
 Author: Ryan Eloff
 Contact: ryan.peter.eloff@gmail.com

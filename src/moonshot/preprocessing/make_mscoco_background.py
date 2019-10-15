@@ -1,10 +1,10 @@
 """Select MSCOCO keyword-image pairs for one-shot background training.
 
 Write background split to data/splits/mscoco_one_shot:
-`python3 src/moonshot/features/make_mscoco_background.py --mode write`
+`python3 src/moonshot/preprocessing/make_mscoco_background.py --mode write`
 
 Debug:
-`python3 -m pdb src/moonshot/features/make_mscoco_background.py --debug --mode write`
+`python3 -m pdb src/moonshot/preprocessing/make_mscoco_background.py --debug --mode write`
 
 Author: Ryan Eloff
 Contact: ryan.peter.eloff@gmail.com
