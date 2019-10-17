@@ -24,8 +24,22 @@ echo "(4) Set number of CPU cores to speed up speech feature extraction."
 echo "    (e.g. 'run.sh extract --env N_CPU_CORES=8')"
 echo ""
 
-# source dataset paths (**NOTE TO USER** )
+# source dataset paths (set by user!)
 source data_paths.sh
+
+# check paths for important datasets
+if [ ! -d "${FLICKR_AUDIO_DIR}" ]; then
+    echo "Directory ${FLICKR_AUDIO_DIR} not found! Set paths in data_paths.sh." 
+fi
+if [ ! -d "${FLICKR_8K_IMAGE_DIR}" ]; then
+    echo "Directory ${FLICKR_8K_IMAGE_DIR} not found! Set paths in data_paths.sh." 
+fi
+if [ ! -d "${FLICKR_30K_IMAGE_DIR}" ]; then
+    echo "Directory ${FLICKR_30K_IMAGE_DIR} not found! Set paths in data_paths.sh." 
+fi
+if [ ! -d "${MSCOCO_DIR}" ]; then
+    echo "Directory ${MSCOCO_DIR} not found! Set paths in data_paths.sh." 
+fi
 
 # point external data directories to dataset paths
 ln -snf /data/$(basename ${TIDIGITS_DIR}) data/external/tidigits

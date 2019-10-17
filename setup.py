@@ -41,19 +41,19 @@ extraction_requires = [
 
 # shell command line tools
 scripts = [
-    os.path.join("src", "moonshot", "features", "ms-apply-cmvn-dd"),
-    os.path.join("src", "moonshot", "features", "ms-extract-speech-features"),
+    # os.path.join("src", "moonshot", "features", "ms-apply-cmvn-dd"),
+    # os.path.join("src", "moonshot", "features", "ms-extract-speech-features"),
 ]
 
 # package command line tools
 package_scripts = [
-    "ms-kaldi-to-numpy=moonshot.features.kaldi_to_numpy:main",
-    "ms-prepare-tidigits-segments=moonshot.features.tidigits.tidigits_segments_prep:main",
-    "ms-prepare-flickr-vad=moonshot.features.flickr_audio.flickr8k_data_prep_vad:main",
-    "ms-get-flickr-fbank=moonshot.features.flickr_audio.get_kaldi_fbank:main",
-    "ms-get-flickr-mfcc=moonshot.features.flickr_audio.get_kaldi_mfcc:main",
-    "ms-get-flickr-words=moonshot.features.flickr_audio.get_iso_words:main",
-    "ms-filter-flickr-keywords=moonshot.features.flickr_audio.write_filtered_sets:main",
+    # "ms-kaldi-to-numpy=moonshot.features.kaldi_to_numpy:main",
+    # "ms-prepare-tidigits-segments=moonshot.features.tidigits.tidigits_segments_prep:main",
+    # "ms-prepare-flickr-vad=moonshot.features.flickr_audio.flickr8k_data_prep_vad:main",
+    # "ms-get-flickr-fbank=moonshot.features.flickr_audio.get_kaldi_fbank:main",
+    # "ms-get-flickr-mfcc=moonshot.features.flickr_audio.get_kaldi_mfcc:main",
+    # "ms-get-flickr-words=moonshot.features.flickr_audio.get_iso_words:main",
+    # "ms-filter-flickr-keywords=moonshot.features.flickr_audio.write_filtered_sets:main",
 ]
 
 # get long description from readme
