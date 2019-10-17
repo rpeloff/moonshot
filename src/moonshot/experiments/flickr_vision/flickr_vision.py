@@ -18,6 +18,7 @@ from absl import logging
 
 
 import numpy as np
+import pandas as pd
 
 
 from moonshot.data import flickr8k
@@ -29,53 +30,68 @@ class FlickrVision(base.Experiment):
     """TODO(rpeloff).
     """
 
-    def __init__(self, images_dir, splits_dir=os.path.join("data", "splits", "flickr8k"), **kwargs):
-        super(FlickrVision, self).__init__(**kwargs)
+    def __init__(self, images_dir, keywords_split="one_shot_evaluation.csv",
+                 splits_dir=os.path.join("data", "splits", "flickr8k"),
+                 **kwargs):
+        super().__init__(**kwargs)
 
-        # load Flickr 8k one-shot evaluation keywords set
-        one_shot_keywords_set = file_io.read_csv(
-            os.path.join(splits_dir, "one_shot_evaluation.csv"),
-            skip_first=True)
-        self.one_shot_keywords_set = tuple(  # convert to numpy arrays
-            np.asarray(x) for x in one_shot_keywords_set)
+        # load specified Flickr 8k (or Flickr30k/MSCOCO) keywords set
+        keywords_path = os.path.join(splits_dir, keywords_split)
+        logging.log(
+            logging.INFO, f"Creating vision experiment from: {keywords_path}")
 
-        # load paths of Flickr 8k images
-        one_shot_image_paths = flickr8k.fetch_image_paths(
-            images_dir, self.one_shot_keywords_set[0])
-        self.one_shot_image_paths = np.asarray(one_shot_image_paths)
+        keywords_set = file_io.read_csv(keywords_path, skip_first=True)
+        self.keywords_set = tuple(np.asarray(x) for x in keywords_set)
 
-        # get unique one-shot keywords and class label lookup dict
-        self.one_shot_keywords = np.unique(self.one_shot_keywords_set[3])
+        # load paths of Flickr 8k (or Flickr30k/MSCOCO) images
+        image_paths = flickr8k.fetch_image_paths(
+            images_dir, self.keywords_set[0])
+        self.image_paths = np.asarray(image_paths)
 
-        self.keyword_id_lookup = {
-            keyword: idx for idx, keyword in enumerate(self.one_shot_keywords)}
+        # get unique keywords # and class label lookup dict
+        self.keywords = np.unique(self.keywords_set[3])
 
-        # get lookup for unique image indices per class label
+        # self.keyword_id_lookup = {
+        #     keyword: idx for idx, keyword in enumerate(self.keywords)}
+
+        # get lookup for unique image indices per keyword class
         self.class_unique_indices = {}
-        for os_cls in self.one_shot_keywords:
-            os_cls_label = self.keyword_id_lookup[os_cls]
+        for keyword_cls in self.keywords:
+            # cls_label = self.keyword_id_lookup[keyword_cls]
 
-            cls_idx = np.where(self.one_shot_keywords_set[3] == os_cls)[0]
-            cls_imgs = self.one_shot_keywords_set[0][cls_idx]
+            cls_idx = np.where(self.keywords_set[3] == keyword_cls)[0]
+            cls_imgs = self.keywords_set[0][cls_idx]
 
-            _, unique_image_idx = np.unique(  # only need the first index
-                cls_imgs, return_index=True)
+            _, unique_image_idx = np.unique(cls_imgs, return_index=True)  # only need first index
 
-            self.class_unique_indices[os_cls_label] = cls_idx[unique_image_idx]
-        
-        # get lookup for valid keywords per unique image uid
-        self.image_keywords = {}
-        for image_uid in np.unique(self.one_shot_keywords_set[0]):
-            image_idx = np.where(self.one_shot_keywords_set[0] == image_uid)[0]
-            self.image_keywords[image_uid] = np.unique(
-                self.one_shot_keywords_set[3][image_idx])
+            self.class_unique_indices[keyword_cls] = cls_idx[unique_image_idx]
+
+        # get lookup for valid keyword labels and indices per unique image uid
+        unique_image_uids, unique_image_paths, unique_image_keywords = [], [], []
+
+        keywords_set_df = pd.DataFrame(
+            zip(keywords_set[0], keywords_set[3], self.image_paths),
+            columns=["image_uid", "keyword", "paths"])
+
+        keyword_image_groups = keywords_set_df.groupby(
+            "image_uid").apply(pd.Series.tolist)
+
+        for group in keyword_image_groups:
+            group_uid, group_keywords, group_paths = list(zip(*group))
+
+            unique_image_uids.append(group_uid[0])
+            unique_image_paths.append(group_paths[0])
+            unique_image_keywords.append(np.unique(group_keywords))
+
+        self.unique_image_uids = unique_image_uids
+        self.unique_image_paths = unique_image_paths
+        self.unique_image_keywords = unique_image_keywords
 
     def _sample_episode(self, L, K, N, episode_labels=None):
 
         # sample episode learning task (defined by L-way classes)
         if episode_labels is None:
-            episode_labels = self.rng.choice(
-                np.arange(len(self.one_shot_keywords)), L, replace=False)
+            episode_labels = self.rng.choice(self.keywords, L, replace=False)
 
         # sample learning examples from episode task
         x_train_idx, y_train = [], []
@@ -86,9 +102,7 @@ class FlickrVision(base.Experiment):
             y_train.extend([ep_label] * K)
 
         # sample evaluation examples from episode task
-        ep_test_labels_idx = self.rng.choice(
-            np.arange(len(episode_labels)), N, replace=True)
-        ep_test_labels = episode_labels[ep_test_labels_idx]
+        ep_test_labels = self.rng.choice(episode_labels, N, replace=True)
 
         x_test_idx, y_test = [], []
         for ep_label in ep_test_labels:
@@ -103,11 +117,11 @@ class FlickrVision(base.Experiment):
     @property
     def _learning_samples(self):
         return (
-            self.one_shot_image_paths[self.curr_episode_train[0]],
+            self.image_paths[self.curr_episode_train[0]],
             self.curr_episode_train[1])
 
     @property
     def _evaluation_samples(self):
         return (
-            self.one_shot_image_paths[self.curr_episode_test[0]],
+            self.image_paths[self.curr_episode_test[0]],
             self.curr_episode_test[1])
