@@ -42,6 +42,7 @@ if [ ! -d "${MSCOCO_DIR}" ]; then
 fi
 
 # point external data directories to dataset paths
+mkdir -p data/external
 ln -snf /data/$(basename ${TIDIGITS_DIR}) data/external/tidigits
 ln -snf /data/$(basename ${FLICKR_AUDIO_DIR}) data/external/flickr_audio
 ln -snf /data/$(basename ${FLICKR_8K_IMAGE_DIR}) data/external/flickr8k_images

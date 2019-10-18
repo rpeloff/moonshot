@@ -12,6 +12,7 @@ from __future__ import print_function
 
 
 import csv
+import json
 import os
 
 
@@ -31,6 +32,7 @@ def check_create_dir(path):
 def write_csv(path, *columns, column_names=None):
     """Write a simple csv file with comma delimiter."""
     check_create_dir(path)
+    logging.log(logging.INFO, "Writing csv file: {}".format(path))
 
     with open(path, "w", newline="") as csv_file:
         csv_writer = csv.writer(csv_file, delimiter=",")
@@ -44,6 +46,7 @@ def write_csv(path, *columns, column_names=None):
 def read_csv(path, skip_first=False, delimiter=","):
     """Read a csv file."""
     logging.log(logging.INFO, "Reading csv file: {}".format(path))
+
     with open(path, "r", newline="") as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=delimiter)
         rows = []
@@ -56,3 +59,22 @@ def read_csv(path, skip_first=False, delimiter=","):
         csv_data = tuple(zip(*rows))
 
     return csv_data
+
+
+def write_json(path, json_dict, indent=4):
+    """Write a dictionary to a json file."""
+    check_create_dir(path)
+    logging.log(logging.INFO, "Writing json file: {}".format(path))
+
+    with open(path, "w") as json_file:
+        json.dump(json_dict, json_file, indent=indent)
+
+
+def read_json(path):
+    """Read a json file."""
+    logging.log(logging.INFO, "Reading json file: {}".format(path))
+
+    with open(path, "r") as json_file:
+        json_dict = json.load(json_file)
+
+    return json_dict
