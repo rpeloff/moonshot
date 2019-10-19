@@ -27,6 +27,7 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from tqdm import tqdm
 
 
+from moonshot.baselines import losses
 from moonshot.baselines.classifier import vision_cnn
 from moonshot.experiments.flickr_vision import flickr_vision
 from moonshot.models import inceptionv3
@@ -55,10 +56,10 @@ DEFAULT_OPTIONS = {
     "dropout_rate": 0.5,
     # objective
     "loss": "cross_entropy",  # "focal"
-    "cross_entropy_pos_weight": 3.0,
-    "cross_entropy_label_smoothing": 0.0,
-    "focal_alpha": 0.9,
-    "focal_gamma": 1.0,
+    "cross_entropy_pos_weight": 2.0,
+    "cross_entropy_label_smoothing": 0.0,  # causes NaN when set to .1?
+    "focal_alpha": 0.75,
+    "focal_gamma": 2.0,
     # training
     "learning_rate": 1e-3,
     "decay_steps": 10000,
@@ -77,62 +78,14 @@ flags.DEFINE_integer("N", 15, "number of task evaluation samples")
 flags.DEFINE_integer("k_neighbours", 1, "number of nearest neighbours to consider")
 
 # logging and target options
-flags.DEFINE_enum("target", "train", ["train", "test"], "train or load and test a model")
+flags.DEFINE_enum("target", "train", ["train", "validate", "embed", "test"],
+                  "train or load and test a model")
 flags.DEFINE_string("output_dir", None, "directory where logs and checkpoints will be stored"
                     "(defaults to logs/<unique run id>)")
 flags.DEFINE_bool("load_best", False, "load previous best model for resumed training or testing")
 flags.DEFINE_bool("resume", True, "resume training if a checkpoint is found at output directory")
 flags.DEFINE_bool("tensorboard", True, "log train and test summaries to TensorBoard")
 flags.DEFINE_bool("debug", False, "log with debug verbosity level")
-
-
-def weighted_cross_entropy_with_logits(pos_weight=1., label_smoothing=0):
-    """Cross entropy computed from unnormalised log probabilities (logits)."""
-    def loss(y_true, y_pred):
-        labels = tf.cast(y_true, tf.float32)
-        logits = tf.cast(y_pred, tf.float32)
-
-        if label_smoothing > 0:
-            # label smoothing between binary classes (Szegedy et al. 2015)
-            labels *= 1.0 - label_smoothing
-            labels += 0.5 * label_smoothing
-
-        return tf.reduce_mean(
-            tf.nn.weighted_cross_entropy_with_logits(
-                labels=labels, logits=logits, pos_weight=pos_weight),
-            axis=-1)
-
-    return loss
-
-
-def focal_loss_with_logits(alpha=0.25, gamma=2.0):
-    """Modulated cross entropy for imbalanced classes (Lin et al., 2017)."""
-    def loss(y_true, y_pred):
-        labels = tf.cast(y_true, tf.float32)
-        logits = tf.cast(y_pred, tf.float32)
-
-        per_entry_cross_ent = tf.nn.sigmoid_cross_entropy_with_logits(
-            labels=labels, logits=logits)
-
-        prediction_probabilities = tf.sigmoid(logits)
-
-        p_t = labels * prediction_probabilities
-        p_t += (1 - labels) * (1 - prediction_probabilities)
-
-        modulating_factor = 1.0
-        if gamma is not None:
-            modulating_factor = tf.pow(1.0 - p_t, gamma)
-
-        alpha_weight_factor = 1.0
-        if alpha is not None:
-            alpha_weight_factor = labels*alpha + (1 - labels)*(1 - alpha)
-
-        focal_cross_entropy_loss = (
-            modulating_factor * alpha_weight_factor * per_entry_cross_ent)
-
-        return tf.reduce_mean(focal_cross_entropy_loss, axis=-1)
-
-    return loss
 
 
 def create_background_dataset(
@@ -346,11 +299,11 @@ def create_train_data(data_sets):
 
 def get_training_objective(model_options):
     if model_options["loss"] == "cross_entropy":
-        multi_label_loss = weighted_cross_entropy_with_logits(
+        multi_label_loss = losses.weighted_cross_entropy_with_logits(
             pos_weight=model_options["cross_entropy_pos_weight"],
             label_smoothing=model_options["cross_entropy_label_smoothing"])
     elif model_options["loss"] == "focal":
-        multi_label_loss = focal_loss_with_logits(
+        multi_label_loss = losses.focal_loss_with_logits(
             alpha=model_options["focal_alpha"],
             gamma=model_options["focal_gamma"])
     else:
@@ -461,7 +414,7 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
         with tf_writer.as_default():
             for x_batch, y_batch in background_train_ds.take(1):
                 tf.summary.image("Example train images", (x_batch+1)/2,
-                    max_outputs=25, step=0)
+                                 max_outputs=25, step=0)
 
     # get training objective
     multi_label_loss = get_training_objective(model_options)
@@ -619,7 +572,150 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
                 os.path.join(output_dir, "best_model.step"),
                 [epoch + 1, global_step, dev_f1, best_val_score])
 
-def test(model_options, output_dir, model_file, model_step_file, tf_writer=None):
+
+def validate(model_options, output_dir, model_file=None, model_step_file=None):
+
+    # laod and create datasets
+    keyword_classes, train_data, dev_data = create_train_data(
+        model_options["data"])
+
+    train_paths, train_keywords, train_labels = train_data
+    dev_paths, dev_keywords, dev_labels = dev_data
+
+    mlb = MultiLabelBinarizer()
+    train_labels_multi_hot = mlb.fit_transform(train_labels)
+    dev_labels_multi_hot = mlb.transform(dev_labels)
+
+    background_train_ds = create_background_dataset(
+        train_paths, train_labels_multi_hot,
+        batch_size=model_options["batch_size"],
+        crop_size=model_options["crop_size"], augment_crop=False, shuffle=True)
+
+    background_dev_ds = create_background_dataset(
+        dev_paths, dev_labels_multi_hot,
+        batch_size=model_options["batch_size"],
+        crop_size=model_options["crop_size"], augment_crop=False, shuffle=False)
+
+    # get training objective
+    multi_label_loss = get_training_objective(model_options)
+
+    # load model
+    vision_classifier, _ = load_model(
+        model_file=os.path.join(output_dir, model_file),
+        model_step_file=os.path.join(output_dir, model_step_file),
+        loss=get_training_objective(model_options))
+
+    # wrap few-shot model for background training
+    vision_few_shot_model = vision_cnn.FewShotModel(
+        vision_classifier, multi_label_loss)
+
+    # create training metrics
+    precision_metric = tf.keras.metrics.Precision()
+    recall_metric = tf.keras.metrics.Recall()
+    loss_metric = tf.keras.metrics.Mean()
+
+    for x_batch, y_batch in background_train_ds:
+        y_predict = vision_few_shot_model.predict(x_batch, training=False)
+        loss_value = vision_few_shot_model.loss(y_batch, y_predict)
+
+        y_one_hot_predict = tf.round(tf.nn.sigmoid(y_predict))
+
+        precision_metric.update_state(y_batch, y_one_hot_predict)
+        recall_metric.update_state(y_batch, y_one_hot_predict)
+        loss_metric.update_state(loss_value)
+
+    train_loss = loss_metric.result().numpy()
+    train_precision = precision_metric.result().numpy()
+    train_recall = recall_metric.result().numpy()
+    train_f1 = 2 / ((1/train_precision) + (1/train_recall))
+
+    precision_metric.reset_states()
+    recall_metric.reset_states()
+    loss_metric.reset_states()
+
+    for x_batch, y_batch in background_dev_ds:
+        y_predict = vision_few_shot_model.predict(x_batch, training=False)
+        loss_value = vision_few_shot_model.loss(y_batch, y_predict)
+
+        y_one_hot_predict = tf.round(tf.nn.sigmoid(y_predict))
+
+        precision_metric.update_state(y_batch, y_one_hot_predict)
+        recall_metric.update_state(y_batch, y_one_hot_predict)
+        loss_metric.update_state(loss_value)
+
+    dev_loss = loss_metric.result().numpy()
+    dev_precision = precision_metric.result().numpy()
+    dev_recall = recall_metric.result().numpy()
+    dev_f1 = 2 / ((1/dev_precision) + (1/dev_recall))
+
+    logging.log(
+        logging.INFO,
+        f"Train: Loss: {train_loss:.6f}, Precision: {train_precision:.3%}, "
+        f"Recall: {train_recall:.3%}, F-1: {train_f1:.3%}")
+    logging.log(
+        logging.INFO,
+        f"Validation: Loss: {dev_loss:.6f}, Precision: {dev_precision:.3%}, "
+        f"Recall: {dev_recall:.3%}, F-1: {dev_f1:.3%}")
+
+
+def embed(model_options, output_dir, model_file, model_step_file):
+
+    # load model
+    vision_classifier, _ = load_model(
+        model_file=os.path.join(output_dir, model_file),
+        model_step_file=os.path.join(output_dir, model_step_file),
+        loss=get_training_objective(model_options))
+
+    # slice embed model from dense layer before final logits layer
+    embed_model = tf.keras.Model(
+        inputs=vision_classifier.input,
+        outputs=vision_classifier.layers[-2].output)
+
+    # load datasets seen in training and embed data
+    for data in model_options["data"]:
+
+        if data == "mscoco":
+            train_image_dir = os.path.join("mscoco", "train2017")
+            dev_image_dir = os.path.join("mscoco", "val2017")
+        else:
+            train_image_dir = dev_image_dir = f"{data}_images"
+
+        one_shot_exp = flickr_vision.FlickrVision(
+            os.path.join("data", "external", train_image_dir),
+            keywords_split="one_shot_evaluation.csv",
+            splits_dir=os.path.join("data", "splits", data))
+
+        background_train_exp = flickr_vision.FlickrVision(
+            os.path.join("data", "external", train_image_dir),
+            keywords_split="background_train.csv",
+            splits_dir=os.path.join("data", "splits", data))
+
+        background_dev_exp = flickr_vision.FlickrVision(
+            os.path.join("data", "external", dev_image_dir),
+            keywords_split="background_dev.csv",
+            splits_dir=os.path.join("data", "splits", data))
+
+        subset_exp = {
+            "one_shot_evaluation": one_shot_exp,
+            "background_train": background_train_exp,
+            "background_dev": background_dev_exp,
+        }
+
+    for subset, exp in subset_exp.items():
+
+        for img_path in tqdm(exp.image_paths):
+
+            image = load_and_preprocess_image(
+                img_path, crop_size=model_options["crop_size"])
+            image_embed = embed_model(tf.expand_dims(image, 0))
+
+            np.savez_compressed(
+                os.path.join(
+                    output_dir, "embed", subset, f"{img_path}.npz"),
+                embed=image_embed)
+
+
+def test(model_options, output_dir, model_file, model_step_file):
 
     # load and create datasets
     one_shot_exp = flickr_vision.FlickrVision(
@@ -627,11 +723,20 @@ def test(model_options, output_dir, model_file, model_step_file, tf_writer=None)
         keywords_split="one_shot_evaluation.csv",
         splits_dir=os.path.join("data", "splits", "flickr8k"))
 
-    # load model
-    vision_classifier, _ = load_model(
-        model_file=os.path.join(output_dir, model_file),
-        model_step_file=os.path.join(output_dir, model_step_file),
-        loss=get_training_objective(model_options))
+    # TODO optional load model/embeddings?
+
+    # total_correct = 0
+    # total_tests = 0
+
+    # for episode in range(FLAGS.episodes):
+
+    #     total_tests += 1
+    #     # ...
+
+    # logging.log(
+    #     logging.INFO,
+    #     "{}-way {}-shot accuracy after {} episodes : {:.6f}".format(
+    #         FLAGS.L, FLAGS.K, FLAGS.episodes, total_correct/total_tests))
 
     import pdb; pdb.set_trace()
 
@@ -648,9 +753,9 @@ def main(argv):
 
     model_found = False
     if FLAGS.output_dir is None:
-        if FLAGS.target == "test":
+        if FLAGS.target == "test" or FLAGS.target == "validate":
             raise ValueError(
-                "Target `test` requires --output_dir to be specified.")
+                "Target `{FLAGS.target}` requires --output_dir to be specified.")
 
         output_dir = os.path.join(
             "logs", __file__, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -668,9 +773,10 @@ def main(argv):
             model_options = file_io.read_json(
                 os.path.join(output_dir, "model_options.json"))
 
-        elif FLAGS.target == "test":
-            raise ValueError(f"Target `test` specified but `{model_file}` not "
-                             f"found in {output_dir}.")
+        elif FLAGS.target == "test" or FLAGS.target == "validate":
+            raise ValueError(
+                f"Target `{FLAGS.target}` specified but `{model_file}` not "
+                f"found in {output_dir}.")
 
     logging_utils.absl_file_logger(output_dir)
 
@@ -690,25 +796,12 @@ def main(argv):
                   model_step_file=model_step_file, tf_writer=tf_writer)
         else:
             train(model_options, output_dir, tf_writer=tf_writer)
+    elif FLAGS.target == "validate":
+        validate(model_options, output_dir, model_file, model_step_file)
+    elif FLAGS.target == "embed":
+        embed(model_options, output_dir, model_file, model_step_file)
     else:
-        test(model_options, output_dir, model_file, model_step_file,
-             tf_writer=tf_writer)
-
-        # flickr_exp = flickr_vision.FlickrVision(
-        #     os.path.join("data", "external", "flickr8k_images"))
-
-        # total_correct = 0
-        # total_tests = 0
-
-        # for episode in range(FLAGS.episodes):
-
-        #     total_tests += 1
-        #     # ...
-
-        # logging.log(
-        #     logging.INFO,
-        #     "{}-way {}-shot accuracy after {} episodes : {:.6f}".format(
-        #         FLAGS.L, FLAGS.K, FLAGS.episodes, total_correct/total_tests))
+        test(model_options, output_dir, model_file, model_step_file)
 
     import pdb; pdb.set_trace()
 
