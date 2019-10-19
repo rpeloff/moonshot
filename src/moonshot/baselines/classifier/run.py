@@ -29,7 +29,9 @@ from tqdm import tqdm
 
 from moonshot.baselines.classifier import vision_cnn
 from moonshot.experiments.flickr_vision import flickr_vision
+from moonshot.models import inceptionv3
 from moonshot.utils import file_io
+from moonshot.utils import logging as logging_utils
 
 
 FLAGS = flags.FLAGS
@@ -46,7 +48,7 @@ DEFAULT_OPTIONS = {
     "num_augment": 4,
     "random_scales": None,
     "horizontal_flip": True,
-    "colour": False,
+    "colour": True,
     # inceptionv3 classifier
     "pretrained": False,
     "dense_units": [2048],
@@ -322,7 +324,7 @@ def create_train_data(data_sets):
         dev_keywords += mscoco_dev_exp.unique_image_keywords
         keyword_classes |= set(mscoco_train_exp.keywords)
 
-    keyword_classes = list(keyword_classes)
+    keyword_classes = list(sorted(keyword_classes))
 
     keyword_id_lookup = {
         keyword: idx for idx, keyword in enumerate(keyword_classes)}
@@ -342,12 +344,35 @@ def create_train_data(data_sets):
             (dev_paths, dev_keywords, dev_labels))
 
 
-def load_model(model_file, model_step_file):
+def get_training_objective(model_options):
+    if model_options["loss"] == "cross_entropy":
+        multi_label_loss = weighted_cross_entropy_with_logits(
+            pos_weight=model_options["cross_entropy_pos_weight"],
+            label_smoothing=model_options["cross_entropy_label_smoothing"])
+    elif model_options["loss"] == "focal":
+        multi_label_loss = focal_loss_with_logits(
+            alpha=model_options["focal_alpha"],
+            gamma=model_options["focal_gamma"])
+    else:
+        raise ValueError(f"Invalid loss function: {model_options['loss']}")
+
+    return multi_label_loss
+
+
+def load_model(model_file, model_step_file, loss):
     logging.log(logging.INFO, f"Loading model: {model_file}")
-    vision_classifier = tf.keras.models.load_model(model_file)
+
+    vision_classifier = tf.keras.models.load_model(
+        model_file, custom_objects={"loss": loss})
 
     model_epochs, global_step, val_score, best_val_score = file_io.read_csv(
-        model_file)[0]
+        model_step_file)[0]
+
+    model_epochs = int(model_epochs)
+    global_step = int(global_step)
+    val_score = float(val_score)
+    best_val_score = float(best_val_score)
+
     logging.log(
         logging.INFO,
         f"Model trained for {model_epochs} epochs ({global_step} steps)")
@@ -364,14 +389,15 @@ def create_model(model_options):
     model_epochs = 0
     best_val_score = -np.inf
 
-    from moonshot.models import inceptionv3
     inception_base = inceptionv3.inceptionv3_base(
         input_shape=(
             model_options["crop_size"], model_options["crop_size"], 3),
         pretrained=model_options["pretrained"])
+
     # inceptionv3.freeze_base_model(inception_base, trainable=None)
 
     model_layers = [
+        # small model debug
         # tf.keras.layers.Conv2D(128, (3, 3), activation="relu", input_shape=(224,224,3)),
         # tf.keras.layers.MaxPool2D((3, 3)),
         # tf.keras.layers.Conv2D(128, (3, 3), activation="relu"),
@@ -431,31 +457,29 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
         batch_size=model_options["batch_size"],
         crop_size=model_options["crop_size"], augment_crop=False, shuffle=False)
 
+    if tf_writer is not None:
+        with tf_writer.as_default():
+            for x_batch, y_batch in background_train_ds.take(1):
+                tf.summary.image("Example train images", (x_batch+1)/2,
+                    max_outputs=25, step=0)
+
+    # get training objective
+    multi_label_loss = get_training_objective(model_options)
+
     # load or create model
     if model_file is not None:
         assert model_options["n_classes"] == len(keyword_classes)
 
         vision_classifier, train_state = load_model(
             model_file=os.path.join(output_dir, model_file),
-            model_step_file=os.path.join(output_dir, model_step_file))
+            model_step_file=os.path.join(output_dir, model_step_file),
+            loss=multi_label_loss)
     else:
         model_options["n_classes"] = len(keyword_classes)
 
         vision_classifier, train_state = create_model(model_options)
 
     global_step, model_epochs, best_val_score = train_state
-
-    # create training objective
-    if model_options["loss"] == "cross_entropy":
-        multi_label_loss = weighted_cross_entropy_with_logits(
-            pos_weight=model_options["cross_entropy_pos_weight"],
-            label_smoothing=model_options["cross_entropy_label_smoothing"])
-    elif model_options["loss"] == "focal":
-        multi_label_loss = focal_loss_with_logits(
-            alpha=model_options["focal_alpha"],
-            gamma=model_options["focal_gamma"])
-    else:
-        raise ValueError(f"Invalid loss function: {model_options['loss']}")
 
     # load or create Adam optimizer with decayed learning rate
     lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
@@ -486,7 +510,7 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
 
     # train model
     for epoch in range(model_epochs, model_options["epochs"]):
-        print(f"Epoch {epoch:03d}")
+        logging.log(logging.INFO, f"Epoch {epoch:03d}")
 
         precision_metric.reset_states()
         recall_metric.reset_states()
@@ -507,9 +531,9 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
             loss_metric.update_state(loss_value)
 
             step_loss = tf.reduce_mean(loss_value)
-            train_loss = loss_metric.result()
-            train_precision = precision_metric.result()
-            train_recall = recall_metric.result()
+            train_loss = loss_metric.result().numpy()
+            train_precision = precision_metric.result().numpy()
+            train_recall = recall_metric.result().numpy()
             train_f1 = 2 / ((1/train_precision) + (1/train_recall))
 
             step_pbar.set_description_str(
@@ -543,21 +567,29 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
             recall_metric.update_state(y_batch, y_one_hot_predict)
             loss_metric.update_state(loss_value)
 
-        dev_loss = loss_metric.result()
-        dev_precision = precision_metric.result()
-        dev_recall = recall_metric.result()
+        dev_loss = loss_metric.result().numpy()
+        dev_precision = precision_metric.result().numpy()
+        dev_recall = recall_metric.result().numpy()
         dev_f1 = 2 / ((1/dev_precision) + (1/dev_recall))
 
         if dev_f1 >= best_val_score:
             best_val_score = dev_f1
             best_model = True
 
-        print(f"\tValidation: Loss: {dev_loss:.6f}, Precision: "
-              f"{dev_precision:.3%}, Recall: {dev_recall:.3%}, F-1: "
-              f"{dev_f1:.3%} {'*' if best_model else ''}")
+        logging.log(
+            logging.INFO,
+            f"Train: Loss: {train_loss:.6f}, Precision: {train_precision:.3%}, "
+            f"Recall: {train_recall:.3%}, F-1: {train_f1:.3%}")
+        logging.log(
+            logging.INFO,
+            f"Validation: Loss: {dev_loss:.6f}, Precision: "
+            f"{dev_precision:.3%}, Recall: {dev_recall:.3%}, F-1: "
+            f"{dev_f1:.3%} {'*' if best_model else ''}")
 
         if tf_writer is not None:
             with tf_writer.as_default():
+                tf.summary.scalar(
+                    "Train step loss", train_loss, step=global_step)
                 tf.summary.scalar(
                     "Train precision", train_precision, step=global_step)
                 tf.summary.scalar(
@@ -575,8 +607,8 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
 
         vision_few_shot_model.model.save(os.path.join(output_dir, "model.h5"))
         file_io.write_csv(
-            os.path.join(output_dir, "model.step")
-            [epoch, global_step, dev_f1, best_val_score])
+            os.path.join(output_dir, "model.step"),
+            [epoch + 1, global_step, dev_f1, best_val_score])
 
         if best_model:
             best_model = False
@@ -587,6 +619,21 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
                 os.path.join(output_dir, "best_model.step"),
                 [epoch + 1, global_step, dev_f1, best_val_score])
 
+def test(model_options, output_dir, model_file, model_step_file, tf_writer=None):
+
+    # load and create datasets
+    one_shot_exp = flickr_vision.FlickrVision(
+        os.path.join("data", "external", "flickr8k_images"),
+        keywords_split="one_shot_evaluation.csv",
+        splits_dir=os.path.join("data", "splits", "flickr8k"))
+
+    # load model
+    vision_classifier, _ = load_model(
+        model_file=os.path.join(output_dir, model_file),
+        model_step_file=os.path.join(output_dir, model_step_file),
+        loss=get_training_objective(model_options))
+
+    import pdb; pdb.set_trace()
 
 def main(argv):
     del argv  # unused
@@ -625,6 +672,8 @@ def main(argv):
             raise ValueError(f"Target `test` specified but `{model_file}` not "
                              f"found in {output_dir}.")
 
+    logging_utils.absl_file_logger(output_dir)
+
     logging.log(logging.INFO, f"Model directory: {output_dir}")
     logging.log(logging.INFO, f"Model options: {model_options}")
 
@@ -642,7 +691,8 @@ def main(argv):
         else:
             train(model_options, output_dir, tf_writer=tf_writer)
     else:
-        pass
+        test(model_options, output_dir, model_file, model_step_file,
+             tf_writer=tf_writer)
 
         # flickr_exp = flickr_vision.FlickrVision(
         #     os.path.join("data", "external", "flickr8k_images"))
