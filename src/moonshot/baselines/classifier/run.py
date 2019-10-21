@@ -14,6 +14,7 @@ from __future__ import print_function
 import os
 import datetime
 import functools
+import time
 
 
 from absl import app
@@ -29,6 +30,7 @@ from tqdm import tqdm
 
 from moonshot.baselines import losses
 from moonshot.baselines.classifier import vision_cnn
+from moonshot.baselines.pixel_match import pixel_match
 from moonshot.experiments.flickr_vision import flickr_vision
 from moonshot.models import inceptionv3
 from moonshot.utils import file_io
@@ -83,6 +85,8 @@ flags.DEFINE_enum("target", "train", ["train", "validate", "embed", "test"],
 flags.DEFINE_string("output_dir", None, "directory where logs and checkpoints will be stored"
                     "(defaults to logs/<unique run id>)")
 flags.DEFINE_bool("load_best", False, "load previous best model for resumed training or testing")
+flags.DEFINE_enum("embed_layer", "dense", ["conv", "avg_pool", "dense", "logits"],
+                  "model layer to slice embeddings from")
 flags.DEFINE_bool("resume", True, "resume training if a checkpoint is found at output directory")
 flags.DEFINE_bool("tensorboard", True, "log train and test summaries to TensorBoard")
 flags.DEFINE_bool("debug", False, "log with debug verbosity level")
@@ -368,7 +372,9 @@ def create_model(model_options):
     if model_options["dense_units"] is not None:
         for dense_units in model_options["dense_units"]:
             model_layers.append(
-                tf.keras.layers.Dense(dense_units, activation="relu"))
+                tf.keras.layers.Dense(dense_units))
+
+            model_layers.append(tf.keras.layers.ReLU())
 
             if model_options["dropout_rate"] is not None:
                 model_layers.append(
@@ -666,12 +672,29 @@ def embed(model_options, output_dir, model_file, model_step_file):
         model_step_file=os.path.join(output_dir, model_step_file),
         loss=get_training_objective(model_options))
 
-    # slice embed model from dense layer before final logits layer
+    # slice embedding model from specified layer
+    if FLAGS.embed_layer == "conv":  # conv layer (flattened)
+        slice_index = 0
+    elif FLAGS.embed_layer == "avg_pool":  # global average pool layer
+        slice_index = 1
+    elif FLAGS.embed_layer == "dense":  # dense layer before relu & logits layer
+        slice_index = -3 if model_options["dropout_rate"] is None else -4
+    elif FLAGS.embed_layer == "logits":  # unnormalised log probabilities
+        slice_index = -1
+
     embed_model = tf.keras.Model(
         inputs=vision_classifier.input,
-        outputs=vision_classifier.layers[-2].output)
+        outputs=vision_classifier.layers[slice_index].output)
 
-    # load datasets seen in training and embed data
+    # create fast autograph embedding function
+    input_shape = [
+        None, model_options["crop_size"], model_options["crop_size"], 3]
+    @tf.function(
+        input_signature=(tf.TensorSpec(shape=input_shape, dtype=tf.float32),))
+    def embed_images(image_batch):
+        return embed_model(image_batch)
+
+    # load datasets seen in training and embed the image data
     for data in model_options["data"]:
 
         if data == "mscoco":
@@ -701,44 +724,112 @@ def embed(model_options, output_dir, model_file, model_step_file):
             "background_dev": background_dev_exp,
         }
 
-    for subset, exp in subset_exp.items():
+        for subset, exp in subset_exp.items():
+            embed_dir = os.path.join(
+                output_dir, "embed", FLAGS.embed_layer, data, subset)
+            file_io.check_create_dir(embed_dir)
 
-        for img_path in tqdm(exp.image_paths):
+            unique_image_paths = np.unique(exp.image_paths)
 
-            image = load_and_preprocess_image(
-                img_path, crop_size=model_options["crop_size"])
-            image_embed = embed_model(tf.expand_dims(image, 0))
+            # load and center square crop images along shortest edges
+            embed_ds = tf.data.Dataset.from_tensor_slices(unique_image_paths)
+            embed_ds = embed_ds.map(
+                lambda img_path: (
+                    img_path, load_and_preprocess_image(
+                        img_path, crop_size=model_options["crop_size"])),
+                num_parallel_calls=tf.data.experimental.AUTOTUNE)
+            # batch images for faster embedding inference
+            embed_ds = embed_ds.batch(model_options["batch_size"])
+            embed_ds = embed_ds.prefetch(tf.data.experimental.AUTOTUNE)
 
-            np.savez_compressed(
-                os.path.join(
-                    output_dir, "embed", subset, f"{img_path}.npz"),
-                embed=image_embed)
+            num_samples = int(
+                np.ceil(len(unique_image_paths) / model_options["batch_size"]))
+
+            start_time = time.time()
+            image_paths, image_embeddings = [], []
+            for path_batch, image_batch in tqdm(embed_ds, total=num_samples):
+                embeddings = embed_images(image_batch)
+
+                image_paths.extend(path_batch.numpy())
+                image_embeddings.extend(embeddings.numpy())
+            end_time = time.time()
+
+            logging.log(
+                logging.INFO,
+                f"Computed embeddings ({FLAGS.embed_layer}) for {data} {subset}"
+                f" in {end_time - start_time:.4f} seconds")
+
+            for image_path, image_embed in zip(image_paths, image_embeddings):
+                image_path = image_path.decode("utf-8")
+                np.savez_compressed(
+                    os.path.join(
+                        embed_dir, f"{os.path.split(image_path)[1]}.npz"),
+                    embed=image_embed)
+
+            logging.log(logging.INFO, f"Embeddings stored at: {embed_dir}")
 
 
 def test(model_options, output_dir, model_file, model_step_file):
+
+    # get embeddings directory
+    embed_dir = os.path.join(
+        output_dir, "embed", FLAGS.embed_layer, "flickr8k",
+        "one_shot_evaluation")
+
+    if not os.path.exists(embed_dir):
+        raise ValueError(
+            f"Directory '{embed_dir}' does not exist. Compute embeddings with "
+            "`--target embed` first.")
 
     # load and create datasets
     one_shot_exp = flickr_vision.FlickrVision(
         os.path.join("data", "external", "flickr8k_images"),
         keywords_split="one_shot_evaluation.csv",
-        splits_dir=os.path.join("data", "splits", "flickr8k"))
+        splits_dir=os.path.join("data", "splits", "flickr8k"),
+        embed_dir=embed_dir)
 
-    # TODO optional load model/embeddings?
+    keyword_classes = list(sorted(set(one_shot_exp.keywords)))
+    keyword_id_lookup = {
+        keyword: idx for idx, keyword in enumerate(keyword_classes)}    
 
-    # total_correct = 0
-    # total_tests = 0
+    pixel_model = pixel_match.PixelMatch(metric="cosine", preprocess=None)
 
-    # for episode in range(FLAGS.episodes):
+    total_correct = 0
+    total_tests = 0
 
-    #     total_tests += 1
-    #     # ...
+    for episode in tqdm(range(FLAGS.episodes)):
 
-    # logging.log(
-    #     logging.INFO,
-    #     "{}-way {}-shot accuracy after {} episodes : {:.6f}".format(
-    #         FLAGS.L, FLAGS.K, FLAGS.episodes, total_correct/total_tests))
+        one_shot_exp.sample_episode(FLAGS.L, FLAGS.K, FLAGS.N)
 
-    import pdb; pdb.set_trace()
+        train_paths, y_train = one_shot_exp.learning_samples
+        test_paths, y_test = one_shot_exp.evaluation_samples
+
+        x_train_embeds = map(lambda path: np.load(path)["embed"], train_paths)
+        x_train_embeds = np.stack(list(x_train_embeds))
+
+        y_train_labels = map(lambda keyword: keyword_id_lookup[keyword], y_train)
+        y_train_labels = np.stack(list(y_train_labels))
+
+        x_test_embeds = map(lambda path: np.load(path)["embed"], test_paths)
+        x_test_embeds = np.stack(list(x_test_embeds))
+
+        y_test_labels = map(lambda keyword: keyword_id_lookup[keyword], y_test)
+        y_test_labels = np.stack(list(y_test_labels))
+
+        adapted_model = pixel_model.adapt_model(x_train_embeds, y_train_labels)
+
+        test_predict = adapted_model.predict(x_test_embeds, FLAGS.k_neighbours)
+
+        num_correct = np.sum(test_predict == y_test_labels)
+
+        total_correct += num_correct
+        total_tests += len(y_test)
+
+    logging.log(
+        logging.INFO,
+        "{}-way {}-shot accuracy after {} episodes : {:.6f}".format(
+            FLAGS.L, FLAGS.K, FLAGS.episodes, total_correct/total_tests))
+
 
 def main(argv):
     del argv  # unused
@@ -778,13 +869,13 @@ def main(argv):
                 f"Target `{FLAGS.target}` specified but `{model_file}` not "
                 f"found in {output_dir}.")
 
-    logging_utils.absl_file_logger(output_dir)
+    logging_utils.absl_file_logger(output_dir, f"log.{FLAGS.target}")
 
     logging.log(logging.INFO, f"Model directory: {output_dir}")
     logging.log(logging.INFO, f"Model options: {model_options}")
 
     tf_writer = None
-    if FLAGS.tensorboard:
+    if FLAGS.tensorboard and FLAGS.target == "train":
         tf_writer = tf.summary.create_file_writer(output_dir)
 
     np.random.seed(model_options["seed"])

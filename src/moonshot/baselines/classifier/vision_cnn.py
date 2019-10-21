@@ -135,7 +135,7 @@ class FewShotModel:
         else:
             return self.model(inputs, training=training)
 
-    @tf.function
+    # @tf.function
     def train_step(self, x, y, optimizer=None, training=True,
                    stop_gradients=False, clip_norm=None):
         """Train model for one gradient step on data.
@@ -160,6 +160,10 @@ class FewShotModel:
             y_predict = self.predict(x, training=training)
             loss_value = self.loss(y, y_predict)
 
+        if "debug" in FLAGS and FLAGS.debug and tf.math.count_nonzero(
+                tf.math.is_nan(loss_value)) >= 1:
+            import pdb; pdb.set_trace()
+
         train_gradients = train_tape.gradient(
             loss_value, self.model.trainable_variables)
 
@@ -173,11 +177,10 @@ class FewShotModel:
             train_gradients, clip_norm)
 
         # debugging in eager mode
-        # if "debug" in FLAGS and FLAGS.debug and global_norm > clip_norm:
-        #     logging.log(
-        #         logging.DEBUG,
-        #         f"Clipping gradients with global norm {global_norm:.6f} to "
-        #         f"clip norm {clip_norm:.6f}")
+        if "debug" in FLAGS and FLAGS.debug and global_norm > clip_norm:
+            tf.print(
+                "Clipping gradients with global norm", global_norm, "to",
+                "clip norm", clip_norm)
 
         if isinstance(optimizer, tf.keras.optimizers.Optimizer):
             optimizer.apply_gradients(
