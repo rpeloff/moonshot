@@ -32,6 +32,7 @@ class FlickrVision(base.Experiment):
 
     def __init__(self, images_dir, keywords_split="one_shot_evaluation.csv",
                  splits_dir=os.path.join("data", "splits", "flickr8k"),
+                 embed_dir=None,
                  **kwargs):
         super().__init__(**kwargs)
 
@@ -48,17 +49,23 @@ class FlickrVision(base.Experiment):
             images_dir, self.keywords_set[0])
         self.image_paths = np.asarray(image_paths)
 
+        # load paths of Flickr 8k image embeddings if specified
+        self.embed_paths = None
+        if embed_dir is not None:
+            embed_paths = []
+            for image_path in image_paths:
+                embed_paths.append(
+                    os.path.join(
+                        embed_dir, f"{os.path.split(image_path)[1]}.npz"))
+                assert os.path.exists(embed_paths[-1])
+            self.embed_paths = np.asarray(embed_paths)
+
         # get unique keywords # and class label lookup dict
         self.keywords = np.unique(self.keywords_set[3])
-
-        # self.keyword_id_lookup = {
-        #     keyword: idx for idx, keyword in enumerate(self.keywords)}
 
         # get lookup for unique image indices per keyword class
         self.class_unique_indices = {}
         for keyword_cls in self.keywords:
-            # cls_label = self.keyword_id_lookup[keyword_cls]
-
             cls_idx = np.where(self.keywords_set[3] == keyword_cls)[0]
             cls_imgs = self.keywords_set[0][cls_idx]
 
@@ -116,12 +123,22 @@ class FlickrVision(base.Experiment):
 
     @property
     def _learning_samples(self):
-        return (
-            self.image_paths[self.curr_episode_train[0]],
-            self.curr_episode_train[1])
+        if self.embed_paths is None:
+            return (
+                self.image_paths[self.curr_episode_train[0]],
+                self.curr_episode_train[1])
+        else:
+            return (
+                self.embed_paths[self.curr_episode_train[0]],
+                self.curr_episode_train[1])
 
     @property
     def _evaluation_samples(self):
-        return (
-            self.image_paths[self.curr_episode_test[0]],
-            self.curr_episode_test[1])
+        if self.embed_paths is None:
+            return (
+                self.image_paths[self.curr_episode_test[0]],
+                self.curr_episode_test[1])
+        else:
+            return (
+                self.embed_paths[self.curr_episode_test[0]],
+                self.curr_episode_test[1])
