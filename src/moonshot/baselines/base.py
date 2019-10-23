@@ -13,6 +13,7 @@ from __future__ import print_function
 
 import abc
 import copy
+import os
 
 
 from absl import flags
@@ -20,7 +21,10 @@ from absl import logging
 
 
 import numpy as np
+import tensorflow as tf
 
+
+from moonshot.utils import file_io
 
 FLAGS = flags.FLAGS
 
@@ -39,6 +43,43 @@ def majority_vote(labels):
     else:
         majority_label = max_idx[0]
     return majority_label
+
+
+def save_model(model, output_dir, epoch, step, metric, current_score,
+               best_score, name="model"):
+    assert hasattr(model, "loss") and model.loss is not None
+    assert hasattr(model, "optimizer") and model.optimizer is not None
+
+    model.save(os.path.join(output_dir, f"{name}.h5"))
+
+    file_io.write_csv(
+        os.path.join(output_dir, f"{name}.step"),
+        [epoch, step, metric, current_score, best_score])
+
+
+def load_model(model_file, model_step_file, loss):
+    logging.log(logging.INFO, f"Loading model: {model_file}")
+
+    model = tf.keras.models.load_model(
+        model_file, custom_objects={"loss": loss})
+
+    model_epochs, global_step, metric, val_score, best_score = file_io.read_csv(
+        model_step_file)[0]
+
+    model_epochs = int(model_epochs)
+    global_step = int(global_step)
+    val_score = float(val_score)
+    best_score = float(best_score)
+
+    logging.log(
+        logging.INFO,
+        f"Model trained for {model_epochs} epochs ({global_step} steps)")
+    logging.log(
+        logging.INFO,
+        f"Validation: current {metric}: {val_score:.5f}, previous best "
+        f"{metric}: {best_score:.5f}")
+
+    return model, (global_step, model_epochs, val_score, best_score)
 
 
 class Model(abc.ABC):

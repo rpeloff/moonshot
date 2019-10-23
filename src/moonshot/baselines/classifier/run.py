@@ -11,9 +11,9 @@ from __future__ import division
 from __future__ import print_function
 
 
-import os
 import datetime
 import functools
+import os
 import time
 
 
@@ -28,6 +28,8 @@ from sklearn.preprocessing import MultiLabelBinarizer
 from tqdm import tqdm
 
 
+from moonshot.baselines import base
+from moonshot.baselines import dataset
 from moonshot.baselines import losses
 from moonshot.baselines.classifier import vision_cnn
 from moonshot.baselines.pixel_match import pixel_match
@@ -55,16 +57,16 @@ DEFAULT_OPTIONS = {
     # inceptionv3 classifier
     "pretrained": False,
     "dense_units": [2048],
-    "dropout_rate": 0.5,
+    "dropout_rate": 0.25,
     # objective
-    "loss": "cross_entropy",  # "focal"
+    "loss": "focal",  # "cross_entropy",
     "cross_entropy_pos_weight": 2.0,
     "cross_entropy_label_smoothing": 0.0,  # causes NaN when set to .1?
-    "focal_alpha": 0.75,
+    "focal_alpha": None,
     "focal_gamma": 2.0,
     # training
-    "learning_rate": 1e-3,
-    "decay_steps": 10000,
+    "learning_rate": 1e-4,
+    "decay_steps": 25000,  # slightly more than two epochs (all data x4 augment)
     "decay_rate": 0.96,
     "gradient_clip_norm": 5.,
     "epochs": 100,
@@ -87,139 +89,10 @@ flags.DEFINE_string("output_dir", None, "directory where logs and checkpoints wi
 flags.DEFINE_bool("load_best", False, "load previous best model for resumed training or testing")
 flags.DEFINE_enum("embed_layer", "dense", ["conv", "avg_pool", "dense", "logits"],
                   "model layer to slice embeddings from")
+flags.DEFINE_bool("mc_dropout", False, "Make embedding predictions with MC Dropout")
 flags.DEFINE_bool("resume", True, "resume training if a checkpoint is found at output directory")
 flags.DEFINE_bool("tensorboard", True, "log train and test summaries to TensorBoard")
 flags.DEFINE_bool("debug", False, "log with debug verbosity level")
-
-
-def create_background_dataset(
-        image_paths, label_ids, batch_size=32,
-        crop_size=224, augment_crop=False, num_augment=4, normalise=True,
-        random_scales=None, horizontal_flip=True, colour=False,
-        shuffle=False, shuffle_buffer=1000,
-        prefetch_buffer=tf.data.experimental.AUTOTUNE,
-        n_parallel_calls=tf.data.experimental.AUTOTUNE):
-
-    preprocess_images_func = functools.partial(
-        load_and_preprocess_image, crop_size=crop_size,
-        augment_crop=augment_crop, normalise=normalise,
-        random_scales=random_scales, horizontal_flip=horizontal_flip,
-        colour=colour)
-
-    background_image_ds = tf.data.Dataset.from_tensor_slices(image_paths)
-    background_image_ds = background_image_ds.map(
-        preprocess_images_func, num_parallel_calls=n_parallel_calls)
-
-    background_label_ds = tf.data.Dataset.from_tensor_slices(
-        tf.cast(label_ids, tf.int64))
-
-    background_ds = tf.data.Dataset.zip(
-        (background_image_ds, background_label_ds))
-
-    if augment_crop:
-        background_ds = background_ds.repeat(num_augment)
-
-    if shuffle:
-        background_ds = background_ds.shuffle(shuffle_buffer)
-
-    background_ds = background_ds.batch(batch_size)
-    background_ds = background_ds.prefetch(prefetch_buffer)
-
-    return background_ds
-
-
-def augment_square_crop(image, size=224, random_scales=None,
-                        horizontal_flip=True, colour=False):
-    """Augment image (scale, flip, colour) and select random square crop."""
-    # get shorter side of image
-    image_shape = tf.shape(image)
-    h, w = image_shape[0], image_shape[1]
-    short_edge = tf.minimum(w, h)
-
-    # scale augmentation
-    if random_scales is None:
-        # random resize along shorter edge in [256, 480]
-        # maxval - minval = power of 2 => unbiased random integers
-        rand_resize = tf.random.uniform(
-            [1], minval=tf.maximum(256, size), maxval=(480+1),
-            dtype=tf.int32)[0]
-    else:
-        # random resize along shorter edge in `random_scales` if specified
-        rand_scale_idx = np.random.choice(np.arange(len(random_scales)), 1)[0]
-        rand_resize = np.asarray(random_scales)[rand_scale_idx]
-
-    resize_hw = (rand_resize * h/short_edge, rand_resize * w/short_edge)
-    image = tf.image.resize(image, resize_hw, method="lanczos3")
-
-    # horizontal flip augmentation
-    if horizontal_flip:
-        image = tf.image.random_flip_left_right(image)
-
-    # colour augmentation (ordering of these ops matters so we shuffle them)
-    if colour:
-        color_ordering = tf.random.uniform([], maxval=1, dtype=tf.int32)
-        if color_ordering == 0:
-            image = tf.image.random_brightness(image, max_delta=32. / 255.)
-            image = tf.image.random_saturation(image, lower=0.5, upper=1.5)
-        else:
-            image = tf.image.random_saturation(image, lower=0.5, upper=1.5)
-            image = tf.image.random_brightness(image, max_delta=32. / 255.)
-
-    # crop augmentation, random sample square (size, size, 3) from resized image
-    image = tf.image.random_crop(image, size=(size, size, 3))
-
-    # make sure that we still have an image in range [0, 1]
-    image = image - tf.reduce_min(image)
-    image = image / tf.reduce_max(image)
-    return image
-
-
-def resize_square_crop(image, size=224):
-    """Resize image along short edge and center square crop."""
-    # get shorter side of image
-    image_shape = tf.shape(image)
-    h, w = image_shape[0], image_shape[1]
-    short_edge = tf.minimum(w, h)
-
-    # resize image
-    resize_hw = (size * h/short_edge, size * w/short_edge)
-    image = tf.image.resize(image, resize_hw, method="lanczos3")
-
-    # center square crop
-    image_shape = tf.shape(image)
-    h, w = image_shape[0], image_shape[1]
-    h_shift = tf.cast((h - size) / 2, tf.int32)
-    w_shift = tf.cast((w - size) / 2, tf.int32)
-    image = tf.image.crop_to_bounding_box(
-        image, h_shift, w_shift, size, size)
-
-    # make sure that we still have an image in range [0, 1]
-    image = image - tf.reduce_min(image)
-    image = image / tf.reduce_max(image)
-    return image
-
-
-def load_and_preprocess_image(image_path, crop_size=224, augment_crop=False,
-                              normalise=True, random_scales=None,
-                              horizontal_flip=True, colour=False):
-    """Load image at path and square crop with optional augmentation."""
-    # read and decode image
-    image = tf.io.read_file(image_path)
-    image = tf.image.decode_jpeg(image, channels=3)
-    # scale image to range [0, 1] expected by tf.image functions
-    image = tf.cast(image, tf.float32) / 255.
-    # random crop image for testing
-    if augment_crop:
-        image = augment_square_crop(
-            image, size=crop_size, random_scales=random_scales,
-            horizontal_flip=horizontal_flip, colour=colour)
-    else:
-        image = resize_square_crop(image, size=crop_size)
-    # normalise image from [0, 1] to range [-1, 1]
-    if normalise:
-        image *= 2.
-        image -= 1.
-    return image
 
 
 def create_train_data(data_sets):
@@ -316,51 +189,17 @@ def get_training_objective(model_options):
     return multi_label_loss
 
 
-def load_model(model_file, model_step_file, loss):
-    logging.log(logging.INFO, f"Loading model: {model_file}")
-
-    vision_classifier = tf.keras.models.load_model(
-        model_file, custom_objects={"loss": loss})
-
-    model_epochs, global_step, val_score, best_val_score = file_io.read_csv(
-        model_step_file)[0]
-
-    model_epochs = int(model_epochs)
-    global_step = int(global_step)
-    val_score = float(val_score)
-    best_val_score = float(best_val_score)
-
-    logging.log(
-        logging.INFO,
-        f"Model trained for {model_epochs} epochs ({global_step} steps)")
-    logging.log(
-        logging.INFO,
-        f"Validation: current F-1: {val_score:.5f}, previous best F-1: "
-        f"{best_val_score:.5f}")
-
-    return vision_classifier, (global_step, model_epochs, best_val_score)
-
-
 def create_model(model_options):
-    global_step = 0
-    model_epochs = 0
-    best_val_score = -np.inf
 
     inception_base = inceptionv3.inceptionv3_base(
         input_shape=(
             model_options["crop_size"], model_options["crop_size"], 3),
         pretrained=model_options["pretrained"])
 
-    # inceptionv3.freeze_base_model(inception_base, trainable=None)
+    if model_options["pretrained"]:
+        inceptionv3.freeze_base_model(inception_base, trainable=None)
 
     model_layers = [
-        # small model debug
-        # tf.keras.layers.Conv2D(128, (3, 3), activation="relu", input_shape=(224,224,3)),
-        # tf.keras.layers.MaxPool2D((3, 3)),
-        # tf.keras.layers.Conv2D(128, (3, 3), activation="relu"),
-        # tf.keras.layers.MaxPool2D((3, 3)),
-        # tf.keras.layers.Conv2D(128, (3, 3), activation="relu"),
-        # vision_cnn.small_vision_cnn(input_shape=(224, 224, 3), batch_norm=True),
         inception_base,
         tf.keras.layers.GlobalAveragePooling2D(),
     ]
@@ -384,7 +223,7 @@ def create_model(model_options):
 
     vision_classifier = tf.keras.Sequential(model_layers)
 
-    return vision_classifier, (global_step, model_epochs, best_val_score)
+    return vision_classifier
 
 
 def train(model_options, output_dir, model_file=None, model_step_file=None,
@@ -401,20 +240,23 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
     train_labels_multi_hot = mlb.fit_transform(train_labels)
     dev_labels_multi_hot = mlb.transform(dev_labels)
 
-    background_train_ds = create_background_dataset(
-        train_paths, train_labels_multi_hot,
-        batch_size=model_options["batch_size"],
-        crop_size=model_options["crop_size"],
+    preprocess_images_func = functools.partial(
+        dataset.load_and_preprocess_image, crop_size=model_options["crop_size"],
         augment_crop=model_options["augment_train"],
-        num_augment=model_options["num_augment"],
         random_scales=model_options["random_scales"],
         horizontal_flip=model_options["horizontal_flip"],
-        colour=model_options["colour"], shuffle=True)
+        colour=model_options["colour"])
 
-    background_dev_ds = create_background_dataset(
-        dev_paths, dev_labels_multi_hot,
+    background_train_ds = dataset.create_flickr_background_dataset(
+        train_paths, train_labels_multi_hot,
+        image_preprocess_func=preprocess_images_func,
         batch_size=model_options["batch_size"],
-        crop_size=model_options["crop_size"], augment_crop=False, shuffle=False)
+        num_repeat=model_options["num_augment"], shuffle=True)
+
+    background_dev_ds = dataset.create_flickr_background_dataset(
+        dev_paths, dev_labels_multi_hot,
+        image_preprocess_func=preprocess_images_func,
+        batch_size=model_options["batch_size"], shuffle=False)
 
     if tf_writer is not None:
         with tf_writer.as_default():
@@ -429,16 +271,22 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
     if model_file is not None:
         assert model_options["n_classes"] == len(keyword_classes)
 
-        vision_classifier, train_state = load_model(
+        vision_classifier, train_state = base.load_model(
             model_file=os.path.join(output_dir, model_file),
             model_step_file=os.path.join(output_dir, model_step_file),
             loss=multi_label_loss)
+
+        global_step, model_epochs, _, best_val_score = train_state
     else:
         model_options["n_classes"] = len(keyword_classes)
 
-        vision_classifier, train_state = create_model(model_options)
+        vision_classifier = create_model(model_options)
 
-    global_step, model_epochs, best_val_score = train_state
+        global_step = 0
+        model_epochs = 0
+        best_val_score = -np.inf
+
+    best_model = False
 
     # load or create Adam optimizer with decayed learning rate
     lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
@@ -507,9 +355,6 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
                 with tf_writer.as_default():
                     tf.summary.scalar(
                         "Train step loss", step_loss, step=global_step)
-                    if step == 0:
-                        tf.summary.image("Example train images", (x_batch+1)/2,
-                                         max_outputs=25, step=global_step)
             global_step += 1
 
         precision_metric.reset_states()
@@ -564,19 +409,16 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
                 tf.summary.scalar(
                     "Validation F-1", dev_f1, step=global_step)
 
-        vision_few_shot_model.model.save(os.path.join(output_dir, "model.h5"))
-        file_io.write_csv(
-            os.path.join(output_dir, "model.step"),
-            [epoch + 1, global_step, dev_f1, best_val_score])
+        base.save_model(
+            vision_few_shot_model.model, output_dir, epoch + 1, global_step,
+            "F-1", dev_f1, best_val_score, name="model")
 
         if best_model:
             best_model = False
 
-            vision_few_shot_model.model.save(
-                os.path.join(output_dir, "best_model.h5"))
-            file_io.write_csv(
-                os.path.join(output_dir, "best_model.step"),
-                [epoch + 1, global_step, dev_f1, best_val_score])
+            base.save_model(
+                vision_few_shot_model.model, output_dir, epoch + 1, global_step,
+                "F-1", dev_f1, best_val_score, name="best_model")
 
 
 def validate(model_options, output_dir, model_file=None, model_step_file=None):
@@ -592,21 +434,25 @@ def validate(model_options, output_dir, model_file=None, model_step_file=None):
     train_labels_multi_hot = mlb.fit_transform(train_labels)
     dev_labels_multi_hot = mlb.transform(dev_labels)
 
-    background_train_ds = create_background_dataset(
-        train_paths, train_labels_multi_hot,
-        batch_size=model_options["batch_size"],
-        crop_size=model_options["crop_size"], augment_crop=False, shuffle=True)
+    preprocess_images_func = functools.partial(
+        dataset.load_and_preprocess_image, crop_size=model_options["crop_size"],
+        augment_crop=False)
 
-    background_dev_ds = create_background_dataset(
+    background_train_ds = dataset.create_flickr_background_dataset(
+        train_paths, train_labels_multi_hot,
+        image_preprocess_func=preprocess_images_func,
+        batch_size=model_options["batch_size"], shuffle=True)
+
+    background_dev_ds = dataset.create_flickr_background_dataset(
         dev_paths, dev_labels_multi_hot,
-        batch_size=model_options["batch_size"],
-        crop_size=model_options["crop_size"], augment_crop=False, shuffle=False)
+        image_preprocess_func=preprocess_images_func,
+        batch_size=model_options["batch_size"], shuffle=False)
 
     # get training objective
     multi_label_loss = get_training_objective(model_options)
 
     # load model
-    vision_classifier, _ = load_model(
+    vision_classifier, _ = base.load_model(
         model_file=os.path.join(output_dir, model_file),
         model_step_file=os.path.join(output_dir, model_step_file),
         loss=get_training_objective(model_options))
@@ -667,7 +513,7 @@ def validate(model_options, output_dir, model_file=None, model_step_file=None):
 def embed(model_options, output_dir, model_file, model_step_file):
 
     # load model
-    vision_classifier, _ = load_model(
+    vision_classifier, _ = base.load_model(
         model_file=os.path.join(output_dir, model_file),
         model_step_file=os.path.join(output_dir, model_step_file),
         loss=get_training_objective(model_options))
@@ -682,9 +528,14 @@ def embed(model_options, output_dir, model_file, model_step_file):
     elif FLAGS.embed_layer == "logits":  # unnormalised log probabilities
         slice_index = -1
 
+    model_input = (vision_classifier.layers[0].input if slice_index == 0 else
+                   vision_classifier.input)
     embed_model = tf.keras.Model(
-        inputs=vision_classifier.input,
+        inputs=model_input,
         outputs=vision_classifier.layers[slice_index].output)
+
+    embed_few_shot_model = vision_cnn.FewShotModel(
+        embed_model, None, mc_dropout=FLAGS.mc_dropout)
 
     # create fast autograph embedding function
     input_shape = [
@@ -692,7 +543,7 @@ def embed(model_options, output_dir, model_file, model_step_file):
     @tf.function(
         input_signature=(tf.TensorSpec(shape=input_shape, dtype=tf.float32),))
     def embed_images(image_batch):
-        return embed_model(image_batch)
+        return embed_few_shot_model.predict(image_batch)
 
     # load datasets seen in training and embed the image data
     for data in model_options["data"]:
@@ -735,7 +586,7 @@ def embed(model_options, output_dir, model_file, model_step_file):
             embed_ds = tf.data.Dataset.from_tensor_slices(unique_image_paths)
             embed_ds = embed_ds.map(
                 lambda img_path: (
-                    img_path, load_and_preprocess_image(
+                    img_path, dataset.load_and_preprocess_image(
                         img_path, crop_size=model_options["crop_size"])),
                 num_parallel_calls=tf.data.experimental.AUTOTUNE)
             # batch images for faster embedding inference
@@ -749,6 +600,8 @@ def embed(model_options, output_dir, model_file, model_step_file):
             image_paths, image_embeddings = [], []
             for path_batch, image_batch in tqdm(embed_ds, total=num_samples):
                 embeddings = embed_images(image_batch)
+                embeddings = tf.reshape(  # flatten in case of conv output
+                    embeddings, [tf.shape(embeddings)[0], -1])
 
                 image_paths.extend(path_batch.numpy())
                 image_embeddings.extend(embeddings.numpy())
@@ -759,12 +612,25 @@ def embed(model_options, output_dir, model_file, model_step_file):
                 f"Computed embeddings ({FLAGS.embed_layer}) for {data} {subset}"
                 f" in {end_time - start_time:.4f} seconds")
 
+            # serialize and write embeddings to TFRecord files
             for image_path, image_embed in zip(image_paths, image_embeddings):
+                example_proto = dataset.embedding_to_example_protobuf(
+                    image_embed)
+
                 image_path = image_path.decode("utf-8")
-                np.savez_compressed(
-                    os.path.join(
-                        embed_dir, f"{os.path.split(image_path)[1]}.npz"),
-                    embed=image_embed)
+                image_path = os.path.join(
+                    embed_dir, f"{os.path.split(image_path)[1]}.tfrecord")
+
+                with tf.io.TFRecordWriter(image_path, options="ZLIB") as writer:
+                    writer.write(example_proto.SerializeToString())
+
+            # TODO: remove old code for npz embedding files
+            # for image_path, image_embed in zip(image_paths, image_embeddings):
+            #     image_path = image_path.decode("utf-8")
+            #     np.savez_compressed(
+            #         os.path.join(
+            #             embed_dir, f"{os.path.split(image_path)[1]}.npz"),
+            #         embed=image_embed)
 
             logging.log(logging.INFO, f"Embeddings stored at: {embed_dir}")
 
@@ -790,7 +656,7 @@ def test(model_options, output_dir, model_file, model_step_file):
 
     keyword_classes = list(sorted(set(one_shot_exp.keywords)))
     keyword_id_lookup = {
-        keyword: idx for idx, keyword in enumerate(keyword_classes)}    
+        keyword: idx for idx, keyword in enumerate(keyword_classes)}
 
     pixel_model = pixel_match.PixelMatch(metric="cosine", preprocess=None)
 
@@ -804,13 +670,13 @@ def test(model_options, output_dir, model_file, model_step_file):
         train_paths, y_train = one_shot_exp.learning_samples
         test_paths, y_test = one_shot_exp.evaluation_samples
 
-        x_train_embeds = map(lambda path: np.load(path)["embed"], train_paths)
+        x_train_embeds = dataset.load_embedding_records(train_paths)
         x_train_embeds = np.stack(list(x_train_embeds))
 
         y_train_labels = map(lambda keyword: keyword_id_lookup[keyword], y_train)
         y_train_labels = np.stack(list(y_train_labels))
 
-        x_test_embeds = map(lambda path: np.load(path)["embed"], test_paths)
+        x_test_embeds = dataset.load_embedding_records(test_paths)
         x_test_embeds = np.stack(list(x_test_embeds))
 
         y_test_labels = map(lambda keyword: keyword_id_lookup[keyword], y_test)
@@ -894,7 +760,6 @@ def main(argv):
     else:
         test(model_options, output_dir, model_file, model_step_file)
 
-    import pdb; pdb.set_trace()
 
 if __name__ == "__main__":
     app.run(main)

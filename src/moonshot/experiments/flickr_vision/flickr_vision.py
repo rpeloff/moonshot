@@ -32,8 +32,7 @@ class FlickrVision(base.Experiment):
 
     def __init__(self, images_dir, keywords_split="one_shot_evaluation.csv",
                  splits_dir=os.path.join("data", "splits", "flickr8k"),
-                 embed_dir=None,
-                 **kwargs):
+                 embed_dir=None, **kwargs):
         super().__init__(**kwargs)
 
         # load specified Flickr 8k (or Flickr30k/MSCOCO) keywords set
@@ -56,7 +55,7 @@ class FlickrVision(base.Experiment):
             for image_path in image_paths:
                 embed_paths.append(
                     os.path.join(
-                        embed_dir, f"{os.path.split(image_path)[1]}.npz"))
+                        embed_dir, f"{os.path.split(image_path)[1]}.tfrecord"))
                 assert os.path.exists(embed_paths[-1])
             self.embed_paths = np.asarray(embed_paths)
 

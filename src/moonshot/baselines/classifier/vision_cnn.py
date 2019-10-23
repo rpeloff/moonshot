@@ -135,7 +135,7 @@ class FewShotModel:
         else:
             return self.model(inputs, training=training)
 
-    # @tf.function
+    @tf.function
     def train_step(self, x, y, optimizer=None, training=True,
                    stop_gradients=False, clip_norm=None):
         """Train model for one gradient step on data.
@@ -162,7 +162,8 @@ class FewShotModel:
 
         if "debug" in FLAGS and FLAGS.debug and tf.math.count_nonzero(
                 tf.math.is_nan(loss_value)) >= 1:
-            import pdb; pdb.set_trace()
+            tf.print("NaN loss encountered:", loss_value)
+            tf.print("Predictions:", y_predict)
 
         train_gradients = train_tape.gradient(
             loss_value, self.model.trainable_variables)

@@ -179,6 +179,8 @@ def triplet_semihard_loss(margin=1.0):
         labels = tf.cast(labels, tf.int32)
         embeddings = tf.cast(embeddings, tf.float32)
 
+        embeddings = tf.nn.l2_normalize(embeddings, axis=1)
+
         # Reshape [batch_size] label tensor to a [batch_size, 1] label tensor.
         lshape = tf.shape(labels)
         assert lshape.shape == 1
