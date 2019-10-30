@@ -105,4 +105,8 @@ class Experiment(abc.ABC):
         """TODO: Store & evaluate agents actions for an evaluation task?"""
 
     def reset(self):
-        """TODO: Reset experiment?"""
+        """TODO: Reset experiment"""
+        self.curr_episode_train = None
+        self.curr_episode_test = None
+
+        self.rng = np.random.Generator(np.random.PCG64(self.seed))

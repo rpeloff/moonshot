@@ -1,0 +1,60 @@
+"""Functions to create and use the Inception V3 model.
+
+Author: Ryan Eloff
+Contact: ryan.peter.eloff@gmail.com
+Date: September 2019
+"""
+
+
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
+
+import tensorflow as tf
+
+
+def create_inceptionv3_network(
+        input_shape=(299, 299, 3), pretrained=False, include_top=False):
+    """Create Inception V3 model.
+
+    `pretrained` should be False for one-shot experiments; cannot use "imagenet"
+    pretrained weights since these are trained on data that is not disjoint from
+    the Flickr 8k one-shot task.
+
+    `include_top` specifies whether to include the top global average pooling
+    and fully-connected logits layers.
+    """
+    weights = "imagenet" if pretrained else None
+    input_shape = tuple(input_shape)
+
+    return tf.keras.applications.inception_v3.InceptionV3(
+        weights=weights, include_top=include_top, input_shape=input_shape)
+
+
+def freeze_weights(inception_model, trainable=None):
+    """Freeze weights of Inception v3 model before the `trainable` index.
+
+    `trainable` specifies which layer (and layers above) is trainable, one of
+    [None, 'final_inception', 'logits'] or an integer index.
+    """
+    # freeze all layers
+    if trainable is None:
+        train_index = len(inception_model.layers)
+    # freeze InceptionV3 base layers before final inception module
+    # i.e. fine tune only the final inception module (and logits if included)
+    elif trainable == "final_inception":
+        train_index = 279
+    # freeze all InceptionV3 base layers
+    # i.e. fine tune only the logits layer (if included)
+    elif trainable == "logits":
+        train_index = 279
+    # freeze layers up to `trainable` index
+    elif isinstance(trainable, int):
+        train_index = trainable
+    # freeze layers
+    for layer in inception_model.layers[:train_index]:
+        layer.trainable = False
+    # make sure layers above this are not frozen
+    for layer in inception_model.layers[train_index:]:
+        layer.trainable = True

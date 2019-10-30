@@ -29,85 +29,85 @@ from moonshot.baselines import base
 FLAGS = flags.FLAGS
 
 
-class Conv2DBlock(tf.keras.layers.Layer):
+# class Conv2DBlock(tf.keras.layers.Layer):
 
-    def __init__(self, filters, kernel_size, activation, normalization=None,
-                 pooling=None, **kwargs):
-        super().__init__(**kwargs)
+#     def __init__(self, filters, kernel_size, activation, normalization=None,
+#                  pooling=None, **kwargs):
+#         super().__init__(**kwargs)
 
-        self.filters = filters
-        self.kernel_size = kernel_size
-        self.activation = activation
-        self.normalization = normalization
-        self.pooling = pooling
+#         self.filters = filters
+#         self.kernel_size = kernel_size
+#         self.activation = activation
+#         self.normalization = normalization
+#         self.pooling = pooling
 
-        self.conv_layer = tf.keras.layers.Conv2D(
-            filters, kernel_size, strides=(1, 1), padding="valid",
-            use_bias=True, kernel_initializer="glorot_uniform",
-            bias_initializer="zeros")
+#         self.conv_layer = tf.keras.layers.Conv2D(
+#             filters, kernel_size, strides=(1, 1), padding="valid",
+#             use_bias=True, kernel_initializer="glorot_uniform",
+#             bias_initializer="zeros")
 
-        self.activation_layer = tf.keras.layers.Activation(activation)
+#         self.activation_layer = tf.keras.layers.Activation(activation)
 
-        if normalization == "batch_norm":
-            self.bn_layer = tf.keras.layers.BatchNormalization()
+#         if normalization == "batch_norm":
+#             self.bn_layer = tf.keras.layers.BatchNormalization()
 
-        if pooling == "maxpool":
-            self.pool_layer = tf.keras.layers.MaxPool2D()
+#         if pooling == "maxpool":
+#             self.pool_layer = tf.keras.layers.MaxPool2D()
 
-    def call(self, inputs, training=False):
-        x = self.conv_layer(inputs)
+#     def call(self, inputs, training=False):
+#         x = self.conv_layer(inputs)
 
-        if self.normalization == "batch_norm":
-            x = self.bn_layer(x, training=training)
+#         if self.normalization == "batch_norm":
+#             x = self.bn_layer(x, training=training)
 
-        x = self.activation_layer(x)
+#         x = self.activation_layer(x)
 
-        if self.pooling == "maxpool":
-            x = self.pool_layer(x)
+#         if self.pooling == "maxpool":
+#             x = self.pool_layer(x)
 
-        return x
+#         return x
 
-    def get_config(self):
-        """Return config so that layer is serializable."""
-        config = super().get_config()
-        config.update({
-            "filters": self.filters,
-            "kernel_size": self.kernel_size,
-            "activation": self.activation,
-            "normalization": self.normalization,
-            "pooling": self.pooling})
-        return config
-
-
-def small_vision_cnn(input_shape=None, filters=32, kernel_size=(3, 3), blocks=4,
-                     batch_norm=False, dropout_rate=None, drop_channels=False):
-    input_kwargs = {}
-    if input_shape is not None:  # specifying input shape builds layers
-        input_kwargs["input_shape"] = input_shape
-
-    conv_block = functools.partial(
-        Conv2DBlock, filters, kernel_size, tf.nn.relu,
-        normalization="batch_norm" if batch_norm else None, pooling="maxpool")
-
-    layers = []
-    for _ in range(blocks):
-        layers.append(blocks)
-
-        if dropout_rate is not None:
-            noise_shape = (None, 1, 1, None) if drop_channels else None
-            layers.append(tf.keras.layers.Dropout(dropout_rate, noise_shape))
-
-    return tf.keras.Sequential([
-        conv_block(**input_kwargs), conv_block(), conv_block(), conv_block()])
+#     def get_config(self):
+#         """Return config so that layer is serializable."""
+#         config = super().get_config()
+#         config.update({
+#             "filters": self.filters,
+#             "kernel_size": self.kernel_size,
+#             "activation": self.activation,
+#             "normalization": self.normalization,
+#             "pooling": self.pooling})
+#         return config
 
 
-def load_small_vision_cnn(model_path, custom_objects=None, compile_model=False):
-    if custom_objects is None:
-        custom_objects = {}
-    custom_objects.update({"Conv2DBlock": Conv2DBlock})
+# def small_vision_cnn(input_shape=None, filters=32, kernel_size=(3, 3), blocks=4,
+#                      batch_norm=False, dropout_rate=None, drop_channels=False):
+#     input_kwargs = {}
+#     if input_shape is not None:  # specifying input shape builds layers
+#         input_kwargs["input_shape"] = input_shape
 
-    return tf.keras.models.load_model(
-        model_path, custom_objects=custom_objects, compile=compile_model)
+#     conv_block = functools.partial(
+#         Conv2DBlock, filters, kernel_size, tf.nn.relu,
+#         normalization="batch_norm" if batch_norm else None, pooling="maxpool")
+
+#     layers = []
+#     for _ in range(blocks):
+#         layers.append(blocks)
+
+#         if dropout_rate is not None:
+#             noise_shape = (None, 1, 1, None) if drop_channels else None
+#             layers.append(tf.keras.layers.Dropout(dropout_rate, noise_shape))
+
+#     return tf.keras.Sequential([
+#         conv_block(**input_kwargs), conv_block(), conv_block(), conv_block()])
+
+
+# def load_small_vision_cnn(model_path, custom_objects=None, compile_model=False):
+#     if custom_objects is None:
+#         custom_objects = {}
+#     custom_objects.update({"Conv2DBlock": Conv2DBlock})
+
+#     return tf.keras.models.load_model(
+#         model_path, custom_objects=custom_objects, compile=compile_model)
 
 
 class FewShotModel:

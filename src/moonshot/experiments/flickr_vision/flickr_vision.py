@@ -27,40 +27,86 @@ from moonshot.utils import file_io
 
 
 class FlickrVision(base.Experiment):
-    """TODO(rpeloff).
-    """
 
-    def __init__(self, images_dir, keywords_split="one_shot_evaluation.csv",
-                 splits_dir=os.path.join("data", "splits", "flickr8k"),
-                 embed_dir=None, **kwargs):
+    def __init__(self, keywords_split="one_shot_evaluation",
+                 flickr8k_image_dir=None, flickr30k_image_dir=None,
+                 mscoco_image_dir=None, embed_dir=None, **kwargs):
+        """TODO
+
+        `keywords_split` one of `['one_shot_evaluation', 'one_shot_development',
+        'background_train', 'background_dev', 'background_test']`.
+        """
         super().__init__(**kwargs)
 
-        # load specified Flickr 8k (or Flickr30k/MSCOCO) keywords set
-        keywords_path = os.path.join(splits_dir, keywords_split)
-        logging.log(
-            logging.INFO, f"Creating vision experiment from: {keywords_path}")
+        assert (flickr8k_image_dir is not None or
+                flickr30k_image_dir is not None or
+                mscoco_image_dir is not None), "Specify at least one image dir"
 
-        keywords_set = file_io.read_csv(keywords_path, skip_first=True)
+        logging.log(logging.INFO, f"Creating Flickr vision experiment")
+
+        # load Flickr 8k and/or Flickr30k and/or MSCOCO keywords set(s)
+        image_dirs, splits_dirs = [], []
+
+        embed_dirs = None
+        if embed_dir is not None:
+            embed_dirs = []
+
+        if flickr8k_image_dir is not None:
+            image_dirs.append(flickr8k_image_dir)
+            splits_dirs.append(os.path.join("data", "splits", "flickr8k"))
+            if embed_dir is not None:
+                embed_dirs.append(os.path.join(embed_dir, "flickr8k"))
+
+        if flickr30k_image_dir is not None:
+            image_dirs.append(flickr30k_image_dir)
+            splits_dirs.append(os.path.join("data", "splits", "flickr30k"))
+            if embed_dir is not None:
+                embed_dirs.append(os.path.join(embed_dir, "flickr30k"))
+
+        if mscoco_image_dir is not None:
+            image_dirs.append(mscoco_image_dir)
+            splits_dirs.append(os.path.join("data", "splits", "mscoco"))
+            if embed_dir is not None:
+                embed_dirs.append(os.path.join(embed_dir, "mscoco"))
+
+        # load each keyword set and corresponding image paths
+        image_paths = []
+        keywords_set = None
+        embed_paths = None if embed_dir is None else []
+
+        for i, (image_dir, splits_dir) in enumerate(zip(image_dirs, splits_dirs)):
+            keywords_path = os.path.join(splits_dir, f"{keywords_split}.csv")
+            _keywords_set = file_io.read_csv(keywords_path, skip_first=True)
+
+            if keywords_set is None:
+                keywords_set = _keywords_set
+            else:
+                keywords_set = tuple(
+                    (x + y) for x, y in zip(keywords_set, _keywords_set))
+
+            # load image paths
+            _image_paths = flickr8k.fetch_image_paths(image_dir, _keywords_set[0])
+            image_paths.extend(_image_paths)
+
+            # load image embedding paths if specified
+            if embed_dir is not None:
+                for image_path in _image_paths:
+                    embed_paths.append(
+                        os.path.join(
+                            embed_dirs[i], f"{keywords_split}",
+                            f"{os.path.split(image_path)[1]}.tfrecord"))
+                    assert os.path.exists(embed_paths[-1])
+
         self.keywords_set = tuple(np.asarray(x) for x in keywords_set)
-
-        # load paths of Flickr 8k (or Flickr30k/MSCOCO) images
-        image_paths = flickr8k.fetch_image_paths(
-            images_dir, self.keywords_set[0])
         self.image_paths = np.asarray(image_paths)
-
-        # load paths of Flickr 8k image embeddings if specified
         self.embed_paths = None
         if embed_dir is not None:
-            embed_paths = []
-            for image_path in image_paths:
-                embed_paths.append(
-                    os.path.join(
-                        embed_dir, f"{os.path.split(image_path)[1]}.tfrecord"))
-                assert os.path.exists(embed_paths[-1])
             self.embed_paths = np.asarray(embed_paths)
 
-        # get unique keywords # and class label lookup dict
-        self.keywords = np.unique(self.keywords_set[3])
+        # get unique keywords and keyword class label lookup dict
+        self.keywords = sorted(np.unique(self.keywords_set[3]).tolist())
+        self.keyword_labels = {
+            keyword: idx for idx, keyword in enumerate(self.keywords)}
 
         # get lookup for unique image indices per keyword class
         self.class_unique_indices = {}

@@ -11,10 +11,14 @@ from __future__ import division
 from __future__ import print_function
 
 
-import functools
+import os
 
 
+import numpy as np
 import tensorflow as tf
+
+
+from moonshot.experiments.flickr_vision import flickr_vision
 
 
 def augment_square_crop(image, size=224, random_scales=None,
@@ -111,38 +115,76 @@ def load_and_preprocess_image(image_path, crop_size=224, augment_crop=False,
     return image
 
 
-def create_flickr_background_dataset(
-        image_paths, label_ids, image_preprocess_func=None, tfrecords=False,
-        batch_size=32, num_repeat=None, shuffle=False, shuffle_buffer=1000,
-        prefetch_buffer=tf.data.experimental.AUTOTUNE,
-        n_parallel_calls=tf.data.experimental.AUTOTUNE):
-    """Create Flickr vision tf.data dataset for background training."""
+def create_flickr_train_data(data_sets, embed_dir=None):
+    """Load train and validation Flickr vision data."""
 
-    if tfrecords:
-        background_image_ds = tf.data.TFRecordDataset(
-            image_paths, compression_type="ZLIB", num_parallel_reads=4)
-    else:
-        background_image_ds = tf.data.Dataset.from_tensor_slices(image_paths)
+    flickr8k_image_dir = None
+    if "flickr8k" in data_sets:
+        flickr8k_image_dir = os.path.join("data", "external", "flickr8k_images")
 
-    background_image_ds = background_image_ds.map(
-        image_preprocess_func, num_parallel_calls=n_parallel_calls)
+    flickr30k_image_dir = None
+    if "flickr30k" in data_sets:
+        flickr30k_image_dir = os.path.join(
+            "data", "external", "flickr30k_images")
 
-    background_label_ds = tf.data.Dataset.from_tensor_slices(
-        tf.cast(label_ids, tf.int64))
+    mscoco_train_image_dir = None
+    mscoco_dev_image_dir = None
+    if "mscoco" in data_sets:
+        mscoco_train_image_dir = os.path.join(
+            "data", "external", "mscoco", "train2017")
+        mscoco_dev_image_dir = os.path.join(
+            "data", "external", "mscoco", "val2017")
 
-    background_ds = tf.data.Dataset.zip(
-        (background_image_ds, background_label_ds))
+    flickr_train_exp = flickr_vision.FlickrVision(
+        keywords_split="background_train",
+        flickr8k_image_dir=flickr8k_image_dir,
+        flickr30k_image_dir=flickr30k_image_dir,
+        mscoco_image_dir=mscoco_train_image_dir, embed_dir=embed_dir)
 
-    if num_repeat is not None:
-        background_ds = background_ds.repeat(num_repeat)
+    flickr_dev_exp = flickr_vision.FlickrVision(
+        keywords_split="background_dev",
+        flickr8k_image_dir=flickr8k_image_dir,
+        flickr30k_image_dir=flickr30k_image_dir,
+        mscoco_image_dir=mscoco_dev_image_dir, embed_dir=embed_dir)
 
-    if shuffle:
-        background_ds = background_ds.shuffle(shuffle_buffer)
+    return flickr_train_exp, flickr_dev_exp
 
-    background_ds = background_ds.batch(batch_size)
-    background_ds = background_ds.prefetch(prefetch_buffer)
 
-    return background_ds
+# def create_flickr_background_dataset(
+#         image_paths, label_ids, image_preprocess_func=None, tfrecords=False,
+#         batch_size=None, num_repeat=None, shuffle=False, shuffle_buffer=1000,
+#         prefetch_buffer=tf.data.experimental.AUTOTUNE,
+#         n_parallel_calls=tf.data.experimental.AUTOTUNE):
+#     """Create Flickr vision tf.data dataset for background training."""
+
+#     if tfrecords:
+#         background_image_ds = tf.data.TFRecordDataset(
+#             image_paths, compression_type="ZLIB", num_parallel_reads=4)
+#     else:
+#         background_image_ds = tf.data.Dataset.from_tensor_slices(image_paths)
+
+#     background_image_ds = background_image_ds.map(
+#         image_preprocess_func, num_parallel_calls=n_parallel_calls)
+
+#     background_label_ds = tf.data.Dataset.from_tensor_slices(
+#         tf.cast(label_ids, tf.int64))
+
+#     background_ds = tf.data.Dataset.zip(
+#         (background_image_ds, background_label_ds))
+
+#     if num_repeat is not None:
+#         background_ds = background_ds.repeat(num_repeat)
+
+#     if shuffle:
+#         background_ds = background_ds.shuffle(shuffle_buffer)
+
+#     if batch_size is not None:
+#         background_ds = background_ds.batch(batch_size)
+
+#     if prefetch_buffer is not None:
+#         background_ds = background_ds.prefetch(prefetch_buffer)
+
+#     return background_ds
 
 
 def embedding_to_example_protobuf(embedding):
@@ -167,116 +209,126 @@ def parse_embedding_protobuf(example_proto):
         example_proto, feature_description)
 
 
-def load_embedding_records(embedding_paths):
-    """Load embeddings as tf.data.TFRecordDataset from TFRecord paths."""
-    embed_records = tf.data.TFRecordDataset(
-        embedding_paths, compression_type="ZLIB")
+# def load_embedding_records(embedding_paths):
+#     """Load embeddings as tf.data.TFRecordDataset from TFRecord paths."""
+#     embed_records = tf.data.TFRecordDataset(
+#         embedding_paths, compression_type="ZLIB")
 
-    embed_records = embed_records.map(
-        lambda example_proto: parse_embedding_protobuf(
-            example_proto)["embed"],
-        num_parallel_calls=tf.data.experimental.AUTOTUNE)
+#     embed_records = embed_records.map(
+#         lambda example_proto: parse_embedding_protobuf(
+#             example_proto)["embed"],
+#         num_parallel_calls=tf.data.experimental.AUTOTUNE)
 
-    return embed_records
+#     return embed_records
 
 
-# TODO: update old code
-# def batch_k_examples_for_p_concepts(
-#         x_data,
-#         y_labels,
-#         p_batch,
-#         k_batch, #, unique_concepts=None
-#         seed=42
-#         ):
-#     """Create dataset with batches of P concept classes and K examples per class.   
+# def create_embedding_dataset(
+#         embed_paths, label_ids, batch_size=None, shuffle=False,
+#         shuffle_buffer=1000, prefetch_buffer=tf.data.experimental.AUTOTUNE,
+#         n_parallel_calls=tf.data.experimental.AUTOTUNE):
+#     """TODO"""
+#     embedding_ds = tf.data.TFRecordDataset(
+#         embed_paths, compression_type="ZLIB", num_parallel_reads=4)
+
+#     embedding_ds = embedding_ds.map(
+#         lambda example_proto: parse_embedding_protobuf(example_proto)["embed"],
+#         num_parallel_calls=n_parallel_calls)
+
+#     label_ds = tf.data.Dataset.from_tensor_slices(
+#         tf.cast(label_ids, tf.int64))
+
+#     embedding_ds = tf.data.Dataset.zip((embedding_ds, label_ds))
+
+#     if shuffle:
+#         embedding_ds = embedding_ds.shuffle(shuffle_buffer)
+
+#     if batch_size is not None:
+#         embedding_ds = embedding_ds.batch(batch_size)
+
+#     if prefetch_buffer is not None:
+#         embedding_ds = embedding_ds.prefetch(prefetch_buffer)
+
+#     return embedding_ds
+
+
+# def filter_dataset_label(label):
+#     """Predicates whether dataset labels match a specific label."""
+
+#     def filter_func(_, y):
+#         tf.print("Filtering label", label)
+#         return tf.equal(tf.cast(y, tf.int64), tf.cast(label, tf.int64))
+
+#     return filter_func
+
+
+def create_balanced_batch_dataset(p, k, label_datasets):
+    """Creates a dataset that samples a balanced batch from `label_datasets`.
+
+    `p` is number of classes per batch, `k` is number of samples per class,
+    `label_datasets` is list of datasets corresponding to class labels.
+    """
+
+    num_labels = len(label_datasets)
+
+    def label_generator():
+        # sample labels that will compose the balanced batch
+        labels = np.random.choice(range(num_labels), p, replace=False)
+        for label in labels:
+            for _ in range(k):
+                yield label
+
+    choice_dataset = tf.data.Dataset.from_generator(label_generator, tf.int64)
+
+    balanced_dataset = tf.data.experimental.choose_from_datasets(
+        label_datasets, choice_dataset)
+
+    return balanced_dataset
+
+    # create dummy dataset
+    # p_k_choice_dataset = tf.data.Dataset.from_tensor_slices([0.])
     
-#     Used to produce balanced mini-batches of PK examples, by randomly sampling 
-#     P concept labels, and then K examples per concept [1]_. 
-#     Parameters
-#     ----------
-#     x_data : array-like or tf.Tensor
-#         Dataset of concept features.
-#     y_labels : array-like or tf.Tensor
-#         Dataset of concept labels associated with features. 
-#     p_batch : int
-#         Number of P unique concept labels to sample per batch.
-#     k_batch : int
-#         Number of K examples to sample per unique concept in a batch.
-#     unique_concepts : array-like, optional
-#         List of unique concept classes from which P concepts are sampled.
-#     Returns
-#     -------
-#     balanced_dataset : tf.data.Dataset
-#         Balanced dataset containing batches (x_batch, y_batch) of PK examples.
-#     n_batch : int
-#         Number of batches per "epoch".
-#     Notes
-#     -----
-#     Based on code for sampling batches of PK images for triplet loss [1]_: 
-#     - https://github.com/VisualComputingInstitute/triplet-reid/blob/f3aed745964d81d7410e1ebe32eb4329af886d2d/train.py#L234-L250.
-#     If unique_concepts is not specified then y_labels can only be of type 
-#     array-like and not tf.Tensor.
-#     References
-#     ----------
-#     .. [1] A. Hermans, L. Beyer, B. Leibe (2017):
-#             In Defense of the Triplet Loss for Person Re-Identification.
-#             https://arxiv.org/abs/1703.07737
-    
-#     Examples
-#     --------
-#     Create an iterator and get tensors for the batches of data and labels:
-#     >>> balanced_dataset, n_batches = ml.data.batch_k_examples_for_p_concepts(...)
-#     >>> balanced_dataset = balanced_dataset.prefetch(1)  # Parallel CPU/GPU processing
-#     >>> ...
-#     >>> with tf.Session() as sess:
-#     ...     ...
-#     ...     for epoch in range(n_epochs):
-#     ...         # Create new iterator and loop over balanced P.K dataset:
-#     ...         x_batch, y_batch = balanced_dataset.make_one_shot_iterator().get_next()
-#     ...         for i in range(n_batches):
-#     ...             sess.run([...], feed_dict={x_in: x_batch, y_in: y_batch})
-#     ...         # End of epoch
-#     """
-#     # # Get the unique concept labels (if None, y_labels can't be tensor)
-#     # if unique_concepts is None:
-#     #     if isinstance(y_labels, tf.Tensor):
-#     #         raise TypeError("Input for y_labels cannot be of type tf.Tensor if "
-#     #                         "unique_concept is not specified.")
-#     #     unique_concepts = np.unique(y_labels)   
-#     # n_concepts = np.shape(unique_concepts)[0]
-#     # n_batches = n_concepts // p_batch
-#     # n_dataset = n_batches * p_batch  # Multiple of P batch size
+    # # sample p random class labels and repeat k times
+    # p_k_choice_dataset = p_k_choice_dataset.flat_map(
+    #     lambda _: tf.data.Dataset.from_tensor_slices(
+    #         tf.tile(
+    #             tf.gather(
+    #                 tf.random.shuffle(
+    #                     tf.range(len(label_datasets), dtype=tf.int64)),
+    #                 tf.range(p)),
+    #             [k])))
 
-#     # Get unique concept labels and count
-#     unique_concepts = tf.unique(y_labels)[0]
-#     n_concepts = tf.shape(unique_concepts, out_type=tf.int64)[0]
-#     # Create shuffled dataset of the unique concept labels
-#     balanced_dataset = tf.data.Dataset.from_tensor_slices(unique_concepts)
-#     balanced_dataset = balanced_dataset.shuffle(n_concepts, seed=seed)
-#     # Select p_batch labels from the shuffled concepts for one batch/episode
-#     balanced_dataset = balanced_dataset.take(p_batch) 
-#     # Map each of the selected concepts to a set of K exemplars
-#     balanced_dataset = balanced_dataset.flat_map(
-#         lambda concept: tf.data.Dataset.from_tensor_slices(
-#             _sample_k_examples_for_labels(labels=concept,
-#                                           x_data=x_data,
-#                                           y_labels=y_labels,
-#                                           k_size=k_batch)))
-#     # Group flattened dataset into batches of P.K exemplars
-#     balanced_dataset = balanced_dataset.batch(p_batch * k_batch)
-#     # Repeat dataset indefinitely (should be controlled by n_episodes)
-#     balanced_dataset = balanced_dataset.repeat(count=-1) 
-#     return balanced_dataset
+    # # use p*k class labels to select samples from label datasets
+    # ds_p_k = tf.data.experimental.choose_from_datasets(
+    #     label_datasets, p_k_choice_dataset)
+
+    # return ds_p_k.batch(p * k)
 
 
+# def create_balanced_batch_dataset(p, k, label_datasets):
+    # num_classes = len(label_datasets)
 
-def filter_p_classes(p, n_classes):
+    # # create dataset of the unique class labels
+    # balanced_dataset = tf.data.Dataset.range(num_classes)
 
-    def filter_func(ds):
-        p_classes = tf.random.shuffle(tf.range(n_classes, dtype=tf.int64))[:p]
-        return ds.filter(
-            lambda x, y: tf.reduce_sum(
-                tf.cast(tf.equal(tf.cast(y, tf.int64), p_classes),
-                        tf.int64)) == 1)
+    # # randomly select p labels
+    # balanced_dataset = balanced_dataset.shuffle(num_classes)
+    # balanced_dataset = balanced_dataset.take(p)
 
-    return filter_func
+    # # map each of the p labels to a set of k samples
+    # balanced_dataset = balanced_dataset.flat_map(
+    #     #lambda label: sample_k_from_datasets(label_datasets, label, k))
+    #     lambda label: tf.data.experimental.choose_from_datasets(
+    #         label_datasets, tf.data.Dataset.from_tensor_slices(
+    #             tf.tile([label], [k]))))
+
+    # # return dataset containing a single batch of PK samples
+    # return balanced_dataset.batch(p * k)
+
+
+# def sample_k_from_datasets(label_datasets, choice, k):
+#     # label_ds = tf.gather(label_datasets, [choice])
+#     # return label_ds.shuffle(k).take(k)
+#     return tf.data.experimental.choose_from_datasets(
+#         label_datasets, tf.data.Dataset.from_tensor_slices(tf.tile([choice], [k])))
+
+

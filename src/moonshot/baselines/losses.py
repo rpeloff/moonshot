@@ -11,6 +11,9 @@ from __future__ import division
 from __future__ import print_function
 
 
+import functools
+
+
 import tensorflow as tf
 
 
@@ -65,25 +68,97 @@ def focal_loss_with_logits(alpha=0.25, gamma=2.0):
     return loss
 
 
-# sourced from https://github.com/tensorflow/tensorflow/blob/r1.14/tensorflow/contrib/losses/python/metric_learning/metric_loss_ops.py#L40-L83
-def pairwise_distance(feature, squared=False):
-    """Computes the pairwise distance matrix with numerical stability.
+def cosine_distance(x1, x2):
+    """Compute the cosine distance between two matrices.
 
-    output[i, j] = || feature[i, :] - feature[j, :] ||_2
+    Note: `x1` and `x2` are assumed to be unit-normalised.
+    """
+    x1 = tf.cast(x1, dtype=tf.float32)
+    x2 = tf.cast(x2, dtype=tf.float32)
+
+    # dot product between rows of `x_1` and rows of `x_2`
+    # "ij,ij->i" := output[i] = sum_j x1[i, j] * x2[i, j]
+    cos_thetas = tf.linalg.einsum("ij,ij->i", x1, x2)
+    cos_distances = 1 - cos_thetas
+
+    # deal with numerical inaccuracies setting small negatives to zero
+    cos_distances = tf.maximum(cos_distances, 0.0)
+
+    return cos_distances
+
+
+def cosine_pairwise_distance(x):
+    """Computes the pairwise cosine distance matrix.
+
+    Note: `x` is assumed to be unit-normalised.
+    """
+    x = tf.cast(x, dtype=tf.float32)
+
+    # dot product between rows of `x` and columns of its transpose
+    cos_thetas = tf.linalg.matmul(x, x, transpose_b=True)
+    pairwise_distances = 1 - cos_thetas
+
+    # deal with numerical inaccuracies setting small negatives to zero
+    pairwise_distances = tf.maximum(pairwise_distances, 0.0)
+
+    # explicitly set the diagonals to zero
+    mask_diagonals = tf.ones_like(pairwise_distances)
+    mask_diagonals -= tf.linalg.diag(tf.ones([tf.shape(x)[0]]))
+
+    pairwise_distances = tf.multiply(pairwise_distances, mask_diagonals)
+
+    return pairwise_distances
+
+
+def euclidean_distance(x1, x2, squared=False):
+    """Compute the cosine distance between two matrices."""
+    x1 = tf.cast(x1, dtype=tf.float32)
+    x2 = tf.cast(x2, dtype=tf.float32)
+
+    # squared euclidean distance
+    distances_squared = tf.reduce_sum((x1 - x2) ** 2, axis=1)
+
+    # deal with numerical inaccuracies setting small negatives to zero
+    distances_squared = tf.maximum(distances_squared, 0.0)
+
+    # optionally take the square root
+    if squared:
+        distances = distances_squared
+    else:
+        # get mask where distances are zero
+        error_mask = tf.less_equal(distances_squared, 0.0)
+
+        # compute stable square root
+        distances = tf.math.sqrt(
+            distances_squared + tf.cast(error_mask, tf.float32) * 1e-16)
+
+        # undo conditionally adding 1e-16
+        distances = tf.math.multiply(
+            distances, tf.cast(tf.math.logical_not(error_mask), tf.float32))
+
+    return distances
+
+
+def euclidean_pairwise_distance(x, squared=False):
+    # sourced from:
+    # https://github.com/tensorflow/tensorflow/blob/r1.14/tensorflow/contrib/losses/python/metric_learning/metric_loss_ops.py#L40-L83
+    """Compute the pairwise euclidean distance matrix with numerical stability.
+
+    output[i, j] = || x[i, :] - x[j, :] ||_2
 
     Args:
-        feature: 2-D Tensor of size [number of data, feature dimension].
+        x: 2-D Tensor of size [number of data, x dimension].
         squared: Boolean, whether or not to square the pairwise distances.
 
     Returns:
         pairwise_distances: 2-D Tensor of size [number of data, number of data].
     """
     pairwise_distances_squared = tf.math.add(
-        tf.math.reduce_sum(tf.math.square(feature), axis=[1], keepdims=True),
+        tf.math.reduce_sum(tf.math.square(x), axis=[1], keepdims=True),
         tf.math.reduce_sum(
-            tf.math.square(tf.transpose(feature)),
+            tf.math.square(tf.transpose(x)),
             axis=[0],
-            keepdims=True)) - 2.0 * tf.matmul(feature, tf.transpose(feature))
+            keepdims=True)) - 2.0 * tf.matmul(x, tf.transpose(x))
 
     # Deal with numerical inaccuracies. Set small negatives to zero.
     pairwise_distances_squared = tf.maximum(
@@ -104,7 +179,7 @@ def pairwise_distance(feature, squared=False):
         pairwise_distances,
         tf.cast(tf.math.logical_not(error_mask), tf.float32))
 
-    num_data = tf.shape(feature)[0]
+    num_data = tf.shape(x)[0]
     # Explicitly set diagonals to zero.
     mask_offdiagonals = tf.ones_like(pairwise_distances) - tf.linalg.diag(
         tf.ones([num_data]))
@@ -112,8 +187,9 @@ def pairwise_distance(feature, squared=False):
     return pairwise_distances
 
 
-# sourced from https://github.com/tensorflow/tensorflow/blob/r1.14/tensorflow/contrib/losses/python/metric_learning/metric_loss_ops.py#L122-L138
 def masked_maximum(data, mask, dim=1):
+    # sourced from:
+    # https://github.com/tensorflow/tensorflow/blob/r1.14/tensorflow/contrib/losses/python/metric_learning/metric_loss_ops.py#L122-L138
     """Computes the axis wise maximum over chosen elements.
 
     Args:
@@ -132,8 +208,9 @@ def masked_maximum(data, mask, dim=1):
     return masked_maximums
 
 
-# sourced from https://github.com/tensorflow/tensorflow/blob/r1.14/tensorflow/contrib/losses/python/metric_learning/metric_loss_ops.py#L141-L157
 def masked_minimum(data, mask, dim=1):
+    # sourced from:
+    # https://github.com/tensorflow/tensorflow/blob/r1.14/tensorflow/contrib/losses/python/metric_learning/metric_loss_ops.py#L141-L157
     """Computes the axis wise minimum over chosen elements.
 
     Args:
@@ -152,42 +229,55 @@ def masked_minimum(data, mask, dim=1):
     return masked_minimums
 
 
-# sourced from https://github.com/tensorflow/tensorflow/blob/r1.14/tensorflow/contrib/losses/python/metric_learning/metric_loss_ops.py#L160-L239
-def triplet_semihard_loss(margin=1.0):
-    """Computes the triplet loss with semi-hard negative mining.
+def triplet_semihard_loss(margin=1.0, metric="cosine"):
+    """Triplet loss with online semi-hard negative mining using labels.
 
-    The loss encourages the positive distances (between a pair of embeddings
-    with the same labels) to be smaller than the minimum negative distance among
-    which are at least greater than the positive distance plus the margin
-    constant (called semi-hard negative) in the mini-batch. If no such negative
-    exists, uses the largest negative distance instead.
-
-    See: https://arxiv.org/abs/1503.03832.
-
-    Args:
-        labels: 1-D tf.int32 `Tensor` with shape [batch_size] of multiclass
-            integer labels.
-        embeddings: 2-D float `Tensor` of embedding vectors. Embeddings should
-            be l2 normalized.
-        margin: Float, margin term in the loss definition.
-
-    Returns:
-        triplet_loss: tf.float32 scalar.
+    `metric` should be one of ['cosine', 'euclidean', 'squared_euclidean'].
     """
+    assert metric in ["cosine", "euclidean", "squared_euclidean"]
 
+    @tf.function
     def loss(labels, embeddings):
+        # sourced from:
+        # https://github.com/tensorflow/tensorflow/blob/r1.14/tensorflow/contrib/losses/python/metric_learning/metric_loss_ops.py#L160-L239
+        """Computes the triplet loss with semi-hard negative mining.
+
+        The loss encourages the positive distances (between a pair of embeddings
+        with the same labels) to be smaller than the minimum negative distance
+        among which are at least greater than the positive distance plus the
+        margin constant (called semi-hard negative) in the mini-batch. If no
+        such negative exists, uses the largest negative distance instead.
+
+        See: https://arxiv.org/abs/1503.03832.
+
+        Args:
+            labels: 1-D tf.int32 `Tensor` with shape [batch_size] of multiclass
+                integer labels.
+            embeddings: 2-D float `Tensor` of embedding vectors. Embeddings
+                should be l2 normalized.
+            margin: Float, margin term in the loss definition.
+
+        Returns:
+            triplet_loss: tf.float32 scalar.
+        """
         labels = tf.cast(labels, tf.int32)
         embeddings = tf.cast(embeddings, tf.float32)
-
         embeddings = tf.nn.l2_normalize(embeddings, axis=1)
 
         # Reshape [batch_size] label tensor to a [batch_size, 1] label tensor.
         lshape = tf.shape(labels)
-        assert lshape.shape == 1
-        labels = tf.reshape(labels, [lshape[0], 1])
+        if lshape.shape == 1:
+            labels = tf.reshape(labels, [lshape[0], 1])
 
         # Build pairwise squared distance matrix.
-        pdist_matrix = pairwise_distance(embeddings, squared=True)
+        if metric == "cosine":
+            pdist_matrix = cosine_pairwise_distance(embeddings)
+        elif metric == "euclidean":
+            pdist_matrix = euclidean_pairwise_distance(
+                embeddings, squared=False)
+        elif metric == "squared_euclidean":
+            pdist_matrix = euclidean_pairwise_distance(
+                embeddings, squared=True)
         # Build pairwise binary adjacency matrix.
         adjacency = tf.equal(labels, tf.transpose(labels))
         # Invert so we can select negatives only.
@@ -232,14 +322,171 @@ def triplet_semihard_loss(margin=1.0):
         # In lifted-struct, the authors multiply 0.5 for upper triangular
         #   in semihard, they take all positive pairs except the diagonal.
         num_positives = tf.math.reduce_sum(mask_positives)
-
+        
         triplet_loss = tf.math.truediv(
             tf.math.reduce_sum(
                 tf.math.maximum(
-                    tf.math.multiply(loss_mat, mask_positives), 0.0)),
-            num_positives,
-            name="triplet_semihard_loss")
+                    tf.math.multiply(loss_mat, mask_positives), y=0.0)),
+            num_positives, name="triplet_semihard_loss")
 
         return triplet_loss
+
+    return loss
+
+
+def triplet_imposter_random_sample_loss(margin=1.0, metric="cosine"):
+    r"""Triplet margin ranking loss with randomly sampled imposters.
+
+    \sum_j[ max(0., d(a_j, p_j) - d(a_j, \bar{p}_j) + m) + max(0., d(a_j, p_j) - d(\bar{a}_j, p_j) + m)]
+
+    where a_j and p_j are the j-th input anchor/positive pair, \bar{a}_j
+    and \bar{p}_j are randomly sampled imposter examples, and m is the
+    margin hyperparameter.
+
+    `metric` should be one of ['cosine', 'euclidean', 'squared_euclidean'].
+    """
+    assert metric in ["cosine", "euclidean", "squared_euclidean"]
+
+    def loss(anchor_embeddings, positive_embeddings):
+        # based on:
+        # https://github.com/dharwath/DAVEnet-pytorch/blob/23a6482859dd2221350307c9bfb5627a5902f6f0/steps/util.py#L88-L116
+        """Compute triplet loss for anchor/positive pairs and randomly sampled imposters.
+
+        `anchor_embeddings` should contain embeddings each paired
+        with a positive embedding in `positive_embeddings`.
+
+        For example, anchor and positive embeddings may result from image pairs
+        or image and spoken caption pairs.
+        """
+        anchor_shape = tf.shape(anchor_embeddings)
+        positive_shape = tf.shape(positive_embeddings)
+
+        # should have same dimensions
+        assert anchor_shape.shape == positive_shape.shape
+
+        anchor_embeddings = tf.cast(anchor_embeddings, tf.float32)
+        anchor_embeddings = tf.nn.l2_normalize(anchor_embeddings, axis=1)
+
+        positive_embeddings = tf.cast(positive_embeddings, tf.float32)
+        positive_embeddings = tf.nn.l2_normalize(positive_embeddings, axis=1)
+
+        batch_size = anchor_shape[0]
+
+        # indices of each pair in the batch
+        pair_idx = tf.range(batch_size, dtype=tf.int32)
+
+        # uniformly sample index offsets in range [1, batch_size) for each pair
+        anchor_uniform_idx = tf.random.uniform(
+            [batch_size], minval=1, maxval=batch_size, dtype=tf.int32)
+        positive_uniform_idx = tf.random.uniform(
+            [batch_size], minval=1, maxval=batch_size, dtype=tf.int32)
+
+        anchor_imposter_idx = pair_idx + anchor_uniform_idx
+        positive_imposter_idx = pair_idx + positive_uniform_idx
+
+        overflow_mask = tf.greater_equal(anchor_imposter_idx, batch_size)
+        anchor_imposter_idx -= tf.cast(overflow_mask, tf.int32) * batch_size
+
+        overflow_mask = tf.greater_equal(positive_imposter_idx, batch_size)
+        positive_imposter_idx -= tf.cast(overflow_mask, tf.int32) * batch_size
+
+        # compute distances between anchor/positive pairs and imposter pairs
+        if metric == "cosine":
+            dist = cosine_distance
+        elif metric == "euclidean":
+            dist = euclidean_distance
+        elif metric == "squared_euclidean":
+            dist = functools.partial(euclidean_distance, squared=True)
+
+        dist_a_p = dist(anchor_embeddings, positive_embeddings)
+        dist_a_imposter_p = dist(
+            tf.gather(anchor_embeddings, anchor_imposter_idx), positive_embeddings)
+        dist_a_p_imposter = dist(
+            anchor_embeddings, tf.gather(positive_embeddings, positive_imposter_idx))
+
+        loss = tf.math.maximum(0., dist_a_p - dist_a_imposter_p + margin)
+        loss += tf.math.maximum(0., dist_a_p - dist_a_p_imposter + margin)
+
+        return tf.math.truediv(
+            tf.math.reduce_sum(loss), tf.cast(batch_size, tf.float32))
+
+    return loss
+
+
+def triplet_imposter_semi_hard_loss(margin=1.0, metric="cosine"):
+    r"""Triplet margin ranking loss with semi-hard mining of imposters.
+
+    \sum_j[ max(0., d(a_j, p_j) - d(a_j, \bar{p}_j) + m) + max(0., d(a_j, p_j) - d(\bar{a}_j, p_j) + m)]
+
+    where a_j and p_j are the j-th input anchor/positive pair, \bar{a}_j
+    and \bar{p}_j are randomly sampled imposter examples, and m is the
+    margin hyperparameter.
+
+    `metric` should be one of ['cosine', 'euclidean', 'squared_euclidean'].
+    """
+    assert metric in ["cosine", "euclidean", "squared_euclidean"]
+
+    def loss(anchor_embeddings, positive_embeddings):
+        # based on:
+        # https://github.com/dharwath/DAVEnet-pytorch/blob/23a6482859dd2221350307c9bfb5627a5902f6f0/steps/util.py#L88-L116
+        """Compute triplet loss for anchor/positive pairs and randomly sampled imposters.
+
+        `anchor_embeddings` should contain embeddings each paired
+        with a positive embedding in `positive_embeddings`.
+
+        For example, anchor and positive embeddings may result from image pairs
+        or image and spoken caption pairs.
+        """
+        anchor_shape = tf.shape(anchor_embeddings)
+        positive_shape = tf.shape(positive_embeddings)
+
+        # should have same dimensions
+        assert anchor_shape.shape == positive_shape.shape
+
+        anchor_embeddings = tf.cast(anchor_embeddings, tf.float32)
+        anchor_embeddings = tf.nn.l2_normalize(anchor_embeddings, axis=1)
+
+        positive_embeddings = tf.cast(positive_embeddings, tf.float32)
+        positive_embeddings = tf.nn.l2_normalize(positive_embeddings, axis=1)
+
+        batch_size = anchor_shape[0]
+
+        # indices of each pair in the batch
+        pair_idx = tf.range(batch_size, dtype=tf.int32)
+
+        # uniformly sample index offsets in range [1, batch_size) for each pair
+        anchor_uniform_idx = tf.random.uniform(
+            [batch_size], minval=1, maxval=batch_size, dtype=tf.int32)
+        positive_uniform_idx = tf.random.uniform(
+            [batch_size], minval=1, maxval=batch_size, dtype=tf.int32)
+
+        anchor_imposter_idx = pair_idx + anchor_uniform_idx
+        positive_imposter_idx = pair_idx + positive_uniform_idx
+
+        overflow_mask = tf.greater_equal(anchor_imposter_idx, batch_size)
+        anchor_imposter_idx -= tf.cast(overflow_mask, tf.int32) * batch_size
+
+        overflow_mask = tf.greater_equal(positive_imposter_idx, batch_size)
+        positive_imposter_idx -= tf.cast(overflow_mask, tf.int32) * batch_size
+
+        # compute distances between anchor/positive pairs and imposter pairs
+        if metric == "cosine":
+            dist = cosine_distance
+        elif metric == "euclidean":
+            dist = euclidean_distance
+        elif metric == "squared_euclidean":
+            dist = functools.partial(euclidean_distance, squared=True)
+
+        dist_a_p = dist(anchor_embeddings, positive_embeddings)
+        dist_a_imposter_p = dist(
+            tf.gather(anchor_embeddings, anchor_imposter_idx), positive_embeddings)
+        dist_a_p_imposter = dist(
+            anchor_embeddings, tf.gather(positive_embeddings, positive_imposter_idx))
+
+        loss = tf.math.maximum(0., dist_a_p - dist_a_imposter_p + margin)
+        loss += tf.math.maximum(0., dist_a_p - dist_a_p_imposter + margin)
+
+        return tf.math.truediv(
+            tf.math.reduce_sum(loss), tf.cast(batch_size, tf.float32))
 
     return loss
