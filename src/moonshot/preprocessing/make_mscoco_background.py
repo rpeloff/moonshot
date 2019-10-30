@@ -115,6 +115,7 @@ def main(argv):
         one_shot_remove_words = keywords.find_similar_keywords(
             caption_keywords[subset], one_shot_keyword_set,
             threshold=FLAGS.similarity, use_lemma=True, spacy_model=FLAGS.spacy_model)
+        one_shot_remove_words += one_shot_keyword_set
 
         # remove one-shot keywords and associated images from filtered keywords
         background_caption_keywords[subset] = keywords.filter_remove_keyword_images(

@@ -247,7 +247,7 @@ def find_similar_keywords(keywords_set, keyword_list, threshold=0.9,
                 for keyword_token in keyword_tokens:
                     similarity = token.similarity(keyword_token)
 
-                    if similarity >= threshold:
+                    if similarity >= threshold and token.text not in keyword_list:
                         similar_keywords.append(token.text)
 
                         if similarity < 1.0 and "debug" in FLAGS and FLAGS.debug:
@@ -256,10 +256,10 @@ def find_similar_keywords(keywords_set, keyword_list, threshold=0.9,
                                 "Found token '{}' similar to keyword '{}': score={}".format(
                                     token.text, keyword_token.text, similarity))
 
-    similar_keywords = np.unique(similar_keywords)
+    similar_keywords = np.unique(similar_keywords).tolist()
     logging.log(
         logging.INFO, "Found {} semantically similar keywords".format(
-            len(similar_keywords) - len(keyword_list)))
+            len(similar_keywords)))
 
     return similar_keywords
 
