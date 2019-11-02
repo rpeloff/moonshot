@@ -20,6 +20,7 @@ import tensorflow as tf
 def weighted_cross_entropy_with_logits(pos_weight=1., label_smoothing=0):
     """Cross entropy computed from unnormalised log probabilities (logits)."""
 
+    # @tf.function
     def loss(y_true, y_pred):
         labels = tf.cast(y_true, tf.float32)
         logits = tf.cast(y_pred, tf.float32)
@@ -40,6 +41,7 @@ def weighted_cross_entropy_with_logits(pos_weight=1., label_smoothing=0):
 def focal_loss_with_logits(alpha=0.25, gamma=2.0):
     """Modulated cross entropy for imbalanced classes (Lin et al., 2017)."""
 
+    # @tf.function
     def loss(y_true, y_pred):
         labels = tf.cast(y_true, tf.float32)
         logits = tf.cast(y_pred, tf.float32)
@@ -322,7 +324,7 @@ def triplet_semihard_loss(margin=1.0, metric="cosine"):
         # In lifted-struct, the authors multiply 0.5 for upper triangular
         #   in semihard, they take all positive pairs except the diagonal.
         num_positives = tf.math.reduce_sum(mask_positives)
-        
+
         triplet_loss = tf.math.truediv(
             tf.math.reduce_sum(
                 tf.math.maximum(
@@ -347,6 +349,7 @@ def triplet_imposter_random_sample_loss(margin=1.0, metric="cosine"):
     """
     assert metric in ["cosine", "euclidean", "squared_euclidean"]
 
+    @tf.function
     def loss(anchor_embeddings, positive_embeddings):
         # based on:
         # https://github.com/dharwath/DAVEnet-pytorch/blob/23a6482859dd2221350307c9bfb5627a5902f6f0/steps/util.py#L88-L116
@@ -416,77 +419,16 @@ def triplet_imposter_random_sample_loss(margin=1.0, metric="cosine"):
 def triplet_imposter_semi_hard_loss(margin=1.0, metric="cosine"):
     r"""Triplet margin ranking loss with semi-hard mining of imposters.
 
-    \sum_j[ max(0., d(a_j, p_j) - d(a_j, \bar{p}_j) + m) + max(0., d(a_j, p_j) - d(\bar{a}_j, p_j) + m)]
-
-    where a_j and p_j are the j-th input anchor/positive pair, \bar{a}_j
-    and \bar{p}_j are randomly sampled imposter examples, and m is the
-    margin hyperparameter.
+    TODO
 
     `metric` should be one of ['cosine', 'euclidean', 'squared_euclidean'].
     """
     assert metric in ["cosine", "euclidean", "squared_euclidean"]
 
+    # @tf.function
     def loss(anchor_embeddings, positive_embeddings):
-        # based on:
-        # https://github.com/dharwath/DAVEnet-pytorch/blob/23a6482859dd2221350307c9bfb5627a5902f6f0/steps/util.py#L88-L116
-        """Compute triplet loss for anchor/positive pairs and randomly sampled imposters.
-
-        `anchor_embeddings` should contain embeddings each paired
-        with a positive embedding in `positive_embeddings`.
-
-        For example, anchor and positive embeddings may result from image pairs
-        or image and spoken caption pairs.
+        """TODO
         """
-        anchor_shape = tf.shape(anchor_embeddings)
-        positive_shape = tf.shape(positive_embeddings)
-
-        # should have same dimensions
-        assert anchor_shape.shape == positive_shape.shape
-
-        anchor_embeddings = tf.cast(anchor_embeddings, tf.float32)
-        anchor_embeddings = tf.nn.l2_normalize(anchor_embeddings, axis=1)
-
-        positive_embeddings = tf.cast(positive_embeddings, tf.float32)
-        positive_embeddings = tf.nn.l2_normalize(positive_embeddings, axis=1)
-
-        batch_size = anchor_shape[0]
-
-        # indices of each pair in the batch
-        pair_idx = tf.range(batch_size, dtype=tf.int32)
-
-        # uniformly sample index offsets in range [1, batch_size) for each pair
-        anchor_uniform_idx = tf.random.uniform(
-            [batch_size], minval=1, maxval=batch_size, dtype=tf.int32)
-        positive_uniform_idx = tf.random.uniform(
-            [batch_size], minval=1, maxval=batch_size, dtype=tf.int32)
-
-        anchor_imposter_idx = pair_idx + anchor_uniform_idx
-        positive_imposter_idx = pair_idx + positive_uniform_idx
-
-        overflow_mask = tf.greater_equal(anchor_imposter_idx, batch_size)
-        anchor_imposter_idx -= tf.cast(overflow_mask, tf.int32) * batch_size
-
-        overflow_mask = tf.greater_equal(positive_imposter_idx, batch_size)
-        positive_imposter_idx -= tf.cast(overflow_mask, tf.int32) * batch_size
-
-        # compute distances between anchor/positive pairs and imposter pairs
-        if metric == "cosine":
-            dist = cosine_distance
-        elif metric == "euclidean":
-            dist = euclidean_distance
-        elif metric == "squared_euclidean":
-            dist = functools.partial(euclidean_distance, squared=True)
-
-        dist_a_p = dist(anchor_embeddings, positive_embeddings)
-        dist_a_imposter_p = dist(
-            tf.gather(anchor_embeddings, anchor_imposter_idx), positive_embeddings)
-        dist_a_p_imposter = dist(
-            anchor_embeddings, tf.gather(positive_embeddings, positive_imposter_idx))
-
-        loss = tf.math.maximum(0., dist_a_p - dist_a_imposter_p + margin)
-        loss += tf.math.maximum(0., dist_a_p - dist_a_p_imposter + margin)
-
-        return tf.math.truediv(
-            tf.math.reduce_sum(loss), tf.cast(batch_size, tf.float32))
+        raise NotImplementedError
 
     return loss

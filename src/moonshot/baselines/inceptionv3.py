@@ -26,7 +26,7 @@ def create_inceptionv3_network(
     and fully-connected logits layers.
     """
     weights = "imagenet" if pretrained else None
-    input_shape = tuple(input_shape)
+    input_shape = None if input_shape is None else tuple(input_shape)
 
     return tf.keras.applications.inception_v3.InceptionV3(
         weights=weights, include_top=include_top, input_shape=input_shape)
