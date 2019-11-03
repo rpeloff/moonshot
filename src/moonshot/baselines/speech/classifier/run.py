@@ -78,14 +78,14 @@ flags.DEFINE_integer("N", 15, "number of task evaluation samples")
 flags.DEFINE_integer("k_neighbours", 1, "number of nearest neighbours to consider")
 flags.DEFINE_string("metric", "cosine", "distance metric to use for DTW nearest neighbours")
 flags.DEFINE_integer("fine_tune_steps", None, "number of fine-tune gradient steps on one-shot data")
-flags.DEFINE_float("fine_tune_lr", 1e-2, "learning rate for gradient descent fine-tune")
+flags.DEFINE_float("fine_tune_lr", 1e-3, "learning rate for gradient descent fine-tune")
 flags.DEFINE_bool("classification", False, "whether to use softmax predictions as match function")
 flags.DEFINE_enum("speaker_mode", "baseline", ["baseline", "difficult", "distractor"],
                   "type of speakers selected in a task episode")
 
 # speech features (for train target)
 flags.DEFINE_enum("features", "mfcc", ["mfcc", "fbank"], "type of processed speech features")
-flags.DEFINE_integer("max_length", 130, "length ro re-interpolate or crop segments")
+flags.DEFINE_integer("max_length", 140, "length ro re-interpolate or crop segments")
 flags.DEFINE_enum("scaling", None, ["global", "features", "segment", "segment_mean"],
                   "type of feature scaling applied to speech segments")
 

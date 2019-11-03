@@ -33,7 +33,8 @@ def test_l_way_k_shot(experiment, k, l, n=15, num_episodes=400,
     #
     if fine_tune_steps is not None:
         base_weights = model.weights
-        gd_optimizer = base.gradient_descent_optimizer(fine_tune_lr)
+        # gd_optimizer = base.gradient_descent_optimizer(fine_tune_lr)
+        gd_optimizer = tf.keras.optimizers.Adam(fine_tune_lr)  # TODO
 
     # make sure experiment is reproducible in the case of multiple tests
     if reset_experiment:
@@ -68,6 +69,9 @@ def test_l_way_k_shot(experiment, k, l, n=15, num_episodes=400,
 
             # adapt model on learning samples if adapt function specified
             if fine_tune_steps is not None:
+                if len(gd_optimizer.weights) != 0:  # TODO reset here so no state leakage!
+                    zeros_init = [tf.zeros_like(var) for var in gd_optimizer.weights[1:]]
+                    gd_optimizer.set_weights([np.int64(0)] + zeros_init)
 
                 task_model.weights = base_weights
                 for _ in range(fine_tune_steps):

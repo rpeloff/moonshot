@@ -84,9 +84,9 @@ flags.DEFINE_integer("L", 5, "number of classes to sample in a task episode (L-w
 flags.DEFINE_integer("K", 1, "number of task learning samples per class (K-shot)")
 flags.DEFINE_integer("N", 15, "number of task evaluation samples")
 flags.DEFINE_integer("k_neighbours", 1, "number of nearest neighbours to consider")
-flags.DEFINE_string("metric", "cosine", "distance metric to use for nearest neighbours")
+flags.DEFINE_string("metric", "cosine", "distance metric to use for nearest neighbours matching")
 flags.DEFINE_integer("fine_tune_steps", None, "number of fine-tune gradient steps on one-shot data")
-flags.DEFINE_float("fine_tune_lr", 1e-2, "learning rate for gradient descent fine-tune")
+flags.DEFINE_float("fine_tune_lr", 1e-3, "learning rate for gradient descent fine-tune")
 flags.DEFINE_bool("classification", False, "whether to use softmax predictions as match function")
 
 # model train/test options
