@@ -91,8 +91,7 @@ def fetch_image_paths(images_dir, image_uids):
     """Fetch Flickr 8K image paths corresponding to the list of image UIDs."""
     image_paths = []
     for uid in image_uids:
-        image_paths.append(
-            os.path.join(images_dir, "{}.jpg".format(uid)))
+        image_paths.append(os.path.join(images_dir, f"{uid}.jpg"))
         assert os.path.exists(image_paths[-1])  # lazy check :)
 
     return image_paths

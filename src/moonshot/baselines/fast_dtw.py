@@ -69,21 +69,28 @@ def dtw_reinterp2d(x, interp_length, interp="quintic"):
     minimum required sequence length (1+1)**2 = 4.
     """
     n_frames, n_feats = np.shape(x)
+
+    # check length is valid
+    assert interp in ["linear", "cubic", "quintic"]
+    if interp == "linear":
+        k = 1
+    elif interp == "cubic":
+        k = 3
+    else:
+        k = 5
+
+    assert n_frames >= (k+1)**2
+
     # axes for frames (i.e. vectors) in the original and interpolated sequences
     frame_orig_axis = np.arange(n_frames)
     frame_interp_axis = np.linspace(0, n_frames, interp_length, endpoint=False)
+
     # axis for features dimension remains unchanged (i.e. not interpolated)
     feature_axis = np.arange(n_feats)
-    # approximate x = f(features, frames) and apply to interpolation axis
-    try:
-        f_interp = interp2d(feature_axis, frame_orig_axis, x, kind=interp)
-        x_interp = f_interp(feature_axis, frame_interp_axis)
 
-    except ValueError as error:
-        logging.log(
-            logging.INFO,
-            "Caught exception interpolating sequence with shape {}: {}".format(
-                np.shape(x), error))
+    # approximate x = f(features, frames) and apply to interpolation axis
+    f_interp = interp2d(feature_axis, frame_orig_axis, x, kind=interp)
+    x_interp = f_interp(feature_axis, frame_interp_axis)
 
     return x_interp
 

@@ -18,7 +18,8 @@ import numpy as np
 import tensorflow as tf
 
 
-from moonshot.experiments.flickr_audio import flickr_audio
+from moonshot.baselines import fast_dtw
+from moonshot.experiments.flickr_speech import flickr_speech
 from moonshot.experiments.flickr_vision import flickr_vision
 
 
@@ -160,20 +161,55 @@ def create_flickr_vision_train_data(data_sets, embed_dir=None):
     return flickr_train_exp, flickr_dev_exp
 
 
+def load_and_preprocess_speech(speech_path, features, max_length=130,
+                               reinterpolate=None, scaling=None):
+    # load speech features from numpy binary file
+    if isinstance(speech_path, tf.Tensor):
+        speech_path = speech_path.numpy().decode("utf-8")
+
+    speech_features = np.load(speech_path)
+
+    # center pad speech features (or crop if longer than max length)
+    if reinterpolate is None:
+        speech_features = tf.expand_dims(speech_features, axis=0)  # add "height" dim
+        speech_features = tf.image.resize_with_crop_or_pad(
+            speech_features, target_height=1, target_width=max_length)
+        speech_features = tf.squeeze(speech_features, axis=0)  # remove "height" dim
+
+    # re-interpolate speech features to max length
+    else:
+        fast_dtw.dtw_reinterp2d(speech_features, max_length, interp=reinterpolate)
+
+    # scale speech features
+    if scaling == "global":
+        speech_features -= flickr_speech.train_global_mean[features]
+        speech_features /= np.sqrt(flickr_speech.train_global_var[features])
+    elif scaling == "features":
+        speech_features -= flickr_speech.train_features_mean[features]
+        speech_features /= np.sqrt(flickr_speech.train_features_var[features])
+    elif scaling == "segment":
+        speech_features = tf.math.divide_no_nan(
+            speech_features - np.mean(speech_features),
+            np.sqrt(np.var(speech_features)))
+    elif scaling == "segment_mean":
+        speech_features = speech_features - np.mean(speech_features)
+
+    # TODO
+    # if spec_augment:
+    #     features = spec_augment(features)
+
+    return speech_features
+
+
 def create_flickr_audio_train_data(features, embed_dir=None):
     """Load train and validation Flickr audio data."""
 
-    flickr_train_exp = flickr_audio.FlickrAudio(
-        keywords_split="background_train",
-        flickr8k_audio_dir=os.path.join(
-            "data", "processed", "flickr_audio", features),
+    flickr_train_exp = flickr_speech.FlickrSpeech(
+        features=features, keywords_split="background_train",
         embed_dir=embed_dir)
 
-    flickr_dev_exp = flickr_audio.FlickrAudio(
-        keywords_split="background_dev",
-        flickr8k_audio_dir=os.path.join(
-            "data", "processed", "flickr_audio", features),
-        embed_dir=embed_dir)
+    flickr_dev_exp = flickr_speech.FlickrSpeech(
+        features=features, keywords_split="background_dev", embed_dir=embed_dir)
 
     return flickr_train_exp, flickr_dev_exp
 

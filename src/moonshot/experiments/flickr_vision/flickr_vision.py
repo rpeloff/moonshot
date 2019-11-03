@@ -42,6 +42,10 @@ class FlickrVision(base.Experiment):
                 flickr30k_image_dir is not None or
                 mscoco_image_dir is not None), "Specify at least one image dir"
 
+        assert keywords_split in [
+            "one_shot_evaluation", "one_shot_development", "background_train",
+            "background_dev", "background_test"]
+
         logging.log(logging.INFO, f"Creating Flickr vision experiment")
 
         # load Flickr 8k and/or Flickr30k and/or MSCOCO keywords set(s)
