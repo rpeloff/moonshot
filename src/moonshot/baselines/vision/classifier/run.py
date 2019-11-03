@@ -267,78 +267,6 @@ def create_fine_tune_model(model_options, vision_network, num_classes):
     return few_shot_model
 
 
-# def get_fine_tune_model_func(model_options, vision_network, loss):
-
-#     # vision_network_clone = tf.keras.models.clone_model(vision_network)
-#     gd_optimizer = base.gradient_descent_optimizer(FLAGS.fine_tune_lr)
-
-#     vision_network_clone = model_utils.create_and_copy_model(
-#         vision_network, create_model, model_options=model_options,
-#         build_model=False)
-
-#     original_weights = vision_network.get_weights()
-
-#     # vision_few_shot_model = base.FewShotModel(
-#     #     vision_network_clone, loss, input_shape=model_options["input_shape"],
-#     #     mc_dropout=FLAGS.mc_dropout)
-
-#     # tf.print(tf.norm(vision_few_shot_model.model.layers[-1].kernel))
-
-#     @tf.function
-#     def fine_tune_model_func(x_train, y_train):
-#         """Create a copy of the vision network and fine-tune on train data."""
-#         # create a copy of vision network so that base model remains unchanged
-
-#         # vision_network_copy = model_utils.create_and_copy_model(
-#         #     vision_network, create_model, model_options=model_options,
-#         #     build_model=False)
-
-#         # vision_network_clone.set_weights(vision_network.get_weights())
-#         vision_network_clone.set_weights(original_weights)
-
-#         # freeze model layers
-#         vision_network_clone.trainable = False
-
-#         # replace multi-label logits layer with categorical logits layer
-#         model_inputs = vision_network_clone.input
-#         model_outputs = vision_network_clone.layers[-2].output
-
-#         num_classes = tf.shape(tf.unique(y_train)[0])[0]
-
-#         model_outputs = tf.keras.layers.Dense(num_classes)(model_outputs)
-
-#         fine_tune_network = tf.keras.Model(
-#             inputs=model_inputs, outputs=model_outputs)
-
-#         tf.print(tf.norm(fine_tune_network.layers[-1].kernel))
-
-#         # vision_few_shot_model.model = fine_tune_network
-#         vision_few_shot_model = base.FewShotModel(
-#             fine_tune_network, loss, mc_dropout=FLAGS.mc_dropout)
-
-#         # gd_optimizer = base.gradient_descent_optimizer(FLAGS.fine_tune_lr)
-
-#         # for _ in range(FLAGS.fine_tune_updates):
-#         #     vision_few_shot_model.train_step(
-#         #         x_train, y_train, optimizer=gd_optimizer, training=True)
-
-#         vision_few_shot_model.train_steps(
-#             x_train, y_train, FLAGS.fine_tune_updates, optimizer=gd_optimizer, training=True)
-
-#         # adapt_model(x_train, y_train)
-
-#         return vision_few_shot_model
-
-#     # @tf.function(experimental_relax_shapes=True)
-#     # def adapt_model(x, y):
-#     #     tf.print(tf.norm(vision_few_shot_model.model.layers[-1].kernel))
-#     #     for _ in range(FLAGS.fine_tune_updates):
-#     #         vision_few_shot_model.train_step(x, y, optimizer=gd_optimizer, training=True)
-#     #     tf.print(tf.norm(vision_few_shot_model.model.layers[-1].kernel))
-
-#     return fine_tune_model_func
-
-
 def train(model_options, output_dir, model_file=None, model_step_file=None,
           tf_writer=None):
     """Create and train image classification model for one-shot learning."""
@@ -679,8 +607,9 @@ def embed(model_options, output_dir, model_file, model_step_file):
         model_step_file=os.path.join(output_dir, model_step_file),
         loss=get_training_objective(model_options))
 
-    # get embedding model
+    # get embedding model and data preprocessing
     embedding_model = create_embedding_model(model_options, vision_network)
+    data_preprocess_func = get_data_preprocess_func(model_options)
 
     # load image datasets and compute embeddings
     for data in ["flickr8k", "flickr30k", "mscoco"]:
@@ -737,7 +666,8 @@ def embed(model_options, output_dir, model_file, model_step_file):
             start_time = time.time()
             paths, embeddings = [], []
             for path_batch in tqdm(path_ds, total=num_samples):
-                path_embeddings = embedding_model.predict(path_batch)
+                path_embeddings = embedding_model.predict(
+                    data_preprocess_func(path_batch))
 
                 paths.extend(path_batch.numpy())
                 embeddings.extend(path_embeddings.numpy())

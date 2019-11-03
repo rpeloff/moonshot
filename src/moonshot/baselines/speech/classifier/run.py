@@ -53,7 +53,7 @@ DEFAULT_OPTIONS = {
     # DAVEnet spoken word classifier
     "batch_norm_spectrogram": True,
     "batch_norm_conv": True,
-    "downsample": False,
+    "downsample": True,
     "embedding_dim": 1024,
     "padding": "same",
     "dense_units": [2048],  # hidden layers on top of DAVEnet base network (followed by logits)
@@ -221,7 +221,7 @@ def create_fine_tune_model(model_options, speech_network, num_classes):
     # create clone of the speech network (so that it remains unchanged)
     speech_network_clone = model_utils.create_and_copy_model(
         speech_network, create_speech_network, model_options=model_options,
-        build_model=False)
+        build_model=True)  # TODO: figure out how to get this working without build (for MAML inner loop)
 
     # freeze model layers up to dense layer before relu & logits layer
     if FLAGS.embed_layer == "dense":
@@ -571,8 +571,9 @@ def embed(model_options, output_dir, model_file, model_step_file):
         model_step_file=os.path.join(output_dir, model_step_file),
         loss=get_training_objective(model_options))
 
-    # get embedding model
+    # get embedding model and data preprocessing
     embedding_model = create_embedding_model(model_options, speech_network)
+    data_preprocess_func = get_data_preprocess_func(model_options)
 
     # load Flickr Audio dataset and compute embeddings
     one_shot_exp = flickr_speech.FlickrSpeech(
@@ -609,7 +610,8 @@ def embed(model_options, output_dir, model_file, model_step_file):
         start_time = time.time()
         paths, embeddings = [], []
         for path_batch in tqdm(path_ds, total=num_samples):
-            path_embeddings = embedding_model.predict(path_batch)
+            path_embeddings = embedding_model.predict(
+                data_preprocess_func(path_batch))
 
             paths.extend(path_batch.numpy())
             embeddings.extend(path_embeddings.numpy())

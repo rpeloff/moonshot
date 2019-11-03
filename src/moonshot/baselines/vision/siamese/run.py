@@ -1,4 +1,4 @@
-"""TODO(rpeloff)
+"""Train vision similarity network with siamese triplet loss and test on Flickr one-shot image task.
 
 Author: Ryan Eloff
 Contact: ryan.peter.eloff@gmail.com
@@ -30,11 +30,11 @@ from tqdm import tqdm
 
 from moonshot.baselines import base
 from moonshot.baselines import dataset
+from moonshot.baselines import experiment
 from moonshot.baselines import inceptionv3
 from moonshot.baselines import losses
-from moonshot.baselines import vision_cnn
+from moonshot.baselines import model_utils
 
-from moonshot.experiments import experiments
 from moonshot.experiments.flickr_vision import flickr_vision
 
 from moonshot.utils import file_io
@@ -66,7 +66,6 @@ DEFAULT_OPTIONS = {
     "pretrained": False,  # train base from scratch or ImageNet (if not using base embeddings/model)
     "dense_units": [1024],  # hidden layers on top of base network (last layer is linear)
     "dropout_rate": 0.2,
-    "batch_norm": False,
     # triplet objective
     "margin": 0.2,
     "metric": "squared_euclidean",  # "euclidean",  # "squared_euclidean",
@@ -86,6 +85,10 @@ flags.DEFINE_integer("L", 5, "number of classes to sample in a task episode (L-w
 flags.DEFINE_integer("K", 1, "number of task learning samples per class (K-shot)")
 flags.DEFINE_integer("N", 15, "number of task evaluation samples")
 flags.DEFINE_integer("k_neighbours", 1, "number of nearest neighbours to consider")
+flags.DEFINE_string("metric", "cosine", "distance metric to use for nearest neighbours matching")
+flags.DEFINE_integer("fine_tune_steps", None, "number of fine-tune gradient steps on one-shot data")
+flags.DEFINE_float("fine_tune_lr", 1e-3, "learning rate for gradient descent fine-tune")
+flags.DEFINE_bool("classification", False, "whether to use softmax predictions as match function")
 
 # model train/test options
 flags.DEFINE_string("base_dir", None, "directory containing base network model")
@@ -106,14 +109,64 @@ flags.DEFINE_bool("tensorboard", True, "log train and test summaries to TensorBo
 flags.DEFINE_bool("debug", False, "log with debug verbosity level")
 
 
-def create_model(model_options, input_shape=None):
-    """Create siamese network from model options."""
+def get_training_objective(model_options):
+    """Get training loss for ranking image similarity with siamese triplets."""
 
+    triplet_loss = losses.triplet_semihard_loss(
+        margin=model_options["margin"], metric=model_options["metric"])
+
+    return triplet_loss
+
+
+def get_data_preprocess_func(model_options):
+    """Create data batch preprocessing function for input to the speech network.
+
+    Returns function `data_preprocess_func` that takes a batch of file paths,
+    loads image or base model embedding data and preprocesses the data.
+    """
+
+    # load images
+    if model_options["base_dir"] is None or not model_options["use_embeddings"]:
+        def data_preprocess_func(image_paths):
+            images = []
+            for image_path in image_paths:
+                images.append(
+                    dataset.load_and_preprocess_image(
+                        image_path, crop_size=model_options["crop_size"]))
+
+            return np.stack(images)
+
+    # load base model embeddings
+    else:
+        def data_preprocess_func(embed_paths):
+            embed_ds = tf.data.TFRecordDataset(
+                embed_paths, compression_type="ZLIB", num_parallel_reads=8)
+            # map sequential to prevent optimization overhead
+            embed_ds = embed_ds.map(
+                lambda example: dataset.parse_embedding_protobuf(
+                    example)["embed"])
+
+            return np.stack(list(embed_ds))
+
+    return data_preprocess_func
+
+
+def create_vision_network(model_options, build_model=True):
+    """Create vision similarity network from model options."""
+
+    # get input shape
+    input_shape = None
+    if build_model:
+        input_shape = model_options["input_shape"]
+
+    # train entire similarity network from scratch or with imagenet weights
     if model_options["base_dir"] is None:
 
         # oracle model with imagenet weights and class logits as embedding layer
         if model_options["oracle"]:
-            logging.log(logging.INFO, "Training oracle with imagenet weights")
+            if build_model:
+                logging.log(
+                    logging.INFO, "Fine-tuning oracle with imagenet weights")
 
             inception_network = inceptionv3.create_inceptionv3_network(
                 input_shape=input_shape, pretrained=True, include_top=True)
@@ -130,7 +183,7 @@ def create_model(model_options, input_shape=None):
             # no additional dense layers if training oracle model
             model_options["dense_units"] = None
 
-        # train network from scratch or with imagenet weights
+        # train network from scratch (or with imagenet weights for debugging)
         else:
             inception_network = inceptionv3.create_inceptionv3_network(
                 input_shape=input_shape, pretrained=model_options["pretrained"],
@@ -139,17 +192,18 @@ def create_model(model_options, input_shape=None):
             # inception model with imagenet weights and our own top dense layers
             # ... alternative "oracle"?
             if model_options["pretrained"]:
-                logging.log(
-                    logging.INFO,
-                    "Training model with imagenet weights and custom top layer")
+                if build_model:
+                    logging.log(
+                        logging.INFO,
+                        "Debugging with imagenet weights and custom top layer")
 
                 # train final inception module and the top dense layers
                 inceptionv3.freeze_weights(
                     inception_network, trainable="final_inception")
 
             # inception model with random weights and our own top dense layers
-            else:
-                logging.log(logging.INFO, "Training model from scratch")
+            elif build_model:
+                logging.log(logging.INFO, "Training entire model from scratch")
 
             model_layers = [
                 inception_network,
@@ -162,57 +216,55 @@ def create_model(model_options, input_shape=None):
             model_layers.append(
                 tf.keras.layers.Dense(model_options["dense_units"][0]))
 
-    # base directory specified with base model or extracted base embeddings
+    # train similarity ranking layers on base model or its extracted embeddings
     else:
-        # train top dense layers on extracted base embeddings
+
+        # train dense layers on extracted base embeddings
         if model_options["use_embeddings"]:
-            logging.log(logging.INFO, "Training model on base embeddings")
+            if build_model:
+                logging.log(logging.INFO, "Training model on base embeddings")
 
             if model_options["dropout_rate"] is not None:
                 model_layers = [
                     tf.keras.layers.Dropout(
                         model_options["dropout_rate"], input_shape=input_shape),
                     tf.keras.layers.Dense(model_options["dense_units"][0])]
-
             else:
                 model_layers = [
                     tf.keras.layers.Dense(
                         model_options["dense_units"][0],
                         input_shape=input_shape)]
 
-        # pretrained model (e.g. classification) with output layer as embeddings
+        # load base model and fine-tune dense layers
         else:
-            logging.log(
-                logging.INFO, "Warm start training from pretrained network")
+            if build_model:
+                logging.log(
+                    logging.INFO, "Warm start training from pretrained network")
 
             base_model_file = os.path.join(
                 model_options["base_dir"], f"{model_options['base_model']}.h5")
             base_step_file = os.path.join(
                 model_options["base_dir"], f"{model_options['base_model']}.step")
 
-            base_network, _ = base.load_model(
+            base_network, _ = model_utils.load_model(
                 model_file=base_model_file, model_step_file=base_step_file,
                 loss=lambda y_t, y_p: y_p)  # dummy loss to load model ..
 
             # set output layer to be linear (in case of softmax, sigmoid, etc.)
             base_network.layers[-1].activation = None
 
-            model_layers = [base_network]
+            # fine-tune only the final base embedding layer and the dense layers
+            for layer in base_network.layers[:-1]:
+                layer.trainable = False
+            base_network.layers[-1].trainable = True
 
-            # no additional dense layers if training pretrained model
-            model_options["dense_units"] = None
+            model_layers = [base_network]
 
     # add top layer hidden units (final layer linear)
     if model_options["dense_units"] is not None:
         for dense_units in model_options["dense_units"][1:]:
 
             model_layers.append(tf.keras.layers.ReLU())
-
-            # BN placement
-            # before/after relu?
-            # before dropout: https://arxiv.org/pdf/1801.05134.pdf
-            if model_options["batch_norm"]:
-                model_layers.append(tf.keras.layers.BatchNormalization())
 
             if model_options["dropout_rate"] is not None:
                 model_layers.append(
@@ -221,70 +273,68 @@ def create_model(model_options, input_shape=None):
             model_layers.append(tf.keras.layers.Dense(dense_units))
 
     vision_network = tf.keras.Sequential(model_layers)
-    vision_network.summary()
+
+    if build_model:
+        vision_network.summary()
 
     return vision_network
 
 
-def get_embedding_function(vision_network, model_options):
-    """Create embedding function from vision network.
+def create_embedding_model(vision_network):
+    """Create embedding model from vision similarity network."""
 
-    Returns function `embedding_func` that takes a batch of file paths, loads
-    and preprocesses the files and computes their embeddings.
-    """
     # l2-normalise network output as done in training of siamese objective
     if FLAGS.l2_norm:
         l2_norm_layer = tf.keras.layers.Lambda(
             lambda x: tf.nn.l2_normalize(x, axis=1))
 
-        embed_model = tf.keras.Model(
+        embedding_network = tf.keras.Model(
             inputs=vision_network.input,
             outputs=l2_norm_layer(vision_network.output))
     else:
-        embed_model = vision_network
+        embedding_network = vision_network
 
-    embed_few_shot_model = vision_cnn.FewShotModel(
-        embed_model, None, mc_dropout=FLAGS.mc_dropout)
+    embedding_model = base.FewShotModel(
+        embedding_network, None, mc_dropout=FLAGS.mc_dropout)
 
-    # get embedding function for base embedding inputs
-    if model_options["use_embeddings"]:
-        def embedding_func(embed_paths):
-            embed_ds = tf.data.TFRecordDataset(
-                embed_paths, compression_type="ZLIB", num_parallel_reads=8)
-            embed_ds = embed_ds.map(
-                lambda example: dataset.parse_embedding_protobuf(
-                    example)["embed"],
-                num_parallel_calls=tf.data.experimental.AUTOTUNE)
-
-            embedding_inputs = np.stack(list(embed_ds))
-            return embed_few_shot_model.predict(embedding_inputs)
-
-    # get embedding function for image inputs
-    else:
-        def embedding_func(image_paths):
-            image_ds = tf.data.Dataset.from_tensor_slices(image_paths)
-            image_ds = image_ds.map(
-                lambda img_path: dataset.load_and_preprocess_image(
-                    img_path, crop_size=model_options["crop_size"]),
-                num_parallel_calls=tf.data.experimental.AUTOTUNE)
-
-            images = np.stack(list(image_ds))
-            return embed_few_shot_model.predict(images)
-
-    return embedding_func
+    return embedding_model
 
 
-def train(model_options, output_dir, model_file=None,
-          model_step_file=None, tf_writer=None):
-    """Create and train siamese model for one-shot learning."""
+def create_fine_tune_model(model_options, vision_network):
+    """Create siamese similarity model for fine-tuning on unseen triplets."""
+
+    # create clone of the vision network (so that it remains unchanged)
+    vision_network_clone = model_utils.create_and_copy_model(
+        vision_network, create_vision_network, model_options=model_options,
+        build_model=False)
+
+    # freeze all model layers for transfer learning (except final dense layer)
+    freeze_index = -1
+
+    for layer in vision_network_clone.layers[:freeze_index]:
+        layer.trainable = False
+
+    # use same objective as during training for fine-tuning
+    fine_tune_loss = get_training_objective(model_options)
+
+    few_shot_model = base.FewShotModel(
+        vision_network_clone, fine_tune_loss, mc_dropout=FLAGS.mc_dropout)
+
+    return few_shot_model
+
+
+def train(model_options, output_dir, model_file=None, model_step_file=None,
+          tf_writer=None):
+    """Create and train image similarity model for one-shot learning."""
 
     # load training data
     embed_dir = None
     if model_options["use_embeddings"]:
+        # load embeddings from dense layer of base model
         embed_dir = os.path.join(
             model_options["base_dir"], "embed", "dense")
 
-    train_exp, dev_exp = dataset.create_flickr_train_data(
+    train_exp, dev_exp = dataset.create_flickr_vision_train_data(
         model_options["data"], embed_dir=embed_dir)
 
     train_labels = []
@@ -295,11 +345,11 @@ def train(model_options, output_dir, model_file=None,
 
     dev_labels = []
     for keyword in dev_exp.keywords_set[3]:
-        label = dev_exp.keyword_labels[keyword]
+        label = train_exp.keyword_labels[keyword]
         dev_labels.append(label)
     dev_labels = np.asarray(dev_labels)
 
-    # define preprocessing for images or base input embeddings
+    # define preprocessing for images if no base model embeddings specified
     if model_options["base_dir"] is None or not model_options["use_embeddings"]:
         train_paths = train_exp.image_paths
 
@@ -310,6 +360,8 @@ def train(model_options, output_dir, model_file=None,
             random_scales=model_options["random_scales"],
             horizontal_flip=model_options["horizontal_flip"],
             colour=model_options["colour"])
+
+    # otherwise define preprocessing for base model embeddings
     else:
         train_paths = train_exp.embed_paths
 
@@ -326,7 +378,7 @@ def train(model_options, output_dir, model_file=None,
         num_repeat = model_options["num_batches"]
         model_options["batch_size"] = model_options["p"] * model_options["k"]
 
-        # get unique path train indices per label
+        # get unique path train indices per unique label
         train_labels_series = pd.Series(train_labels)
         train_label_idx = {
             label: idx.values[
@@ -362,8 +414,10 @@ def train(model_options, output_dir, model_file=None,
 
     # load embedding TFRecords (faster here than before balanced sampling)
     if model_options["use_embeddings"]:
+        # batch to read files in parallel
         background_train_ds = background_train_ds.batch(
             model_options["batch_size"])
+
         background_train_ds = background_train_ds.flat_map(
             lambda paths, labels: tf.data.Dataset.zip((
                 tf.data.TFRecordDataset(
@@ -418,12 +472,22 @@ def train(model_options, output_dir, model_file=None,
                 tf.summary.text("Example train labels", labels, step=0)
 
     # get training objective
-    triplet_loss = losses.triplet_semihard_loss(
-        margin=model_options["margin"], metric=model_options["metric"])
+    triplet_loss = get_training_objective(model_options)
+
+    # get model input shape
+    if model_options["use_embeddings"]:
+        for x_batch, _ in background_train_ds.take(1):
+            model_options["base_embed_size"] = int(
+                tf.shape(x_batch)[1].numpy())
+
+        model_options["input_shape"] = [model_options["base_embed_size"]]
+    else:
+        model_options["input_shape"] = [
+            model_options["crop_size"], model_options["crop_size"], 3]
 
     # load or create model
     if model_file is not None:
-        vision_network, train_state = base.load_model(
+        vision_network, train_state = model_utils.load_model(
             model_file=os.path.join(output_dir, model_file),
             model_step_file=os.path.join(output_dir, model_step_file),
             loss=triplet_loss)
@@ -432,18 +496,7 @@ def train(model_options, output_dir, model_file=None,
         initial_model = False
         global_step, model_epochs, _, best_val_score = train_state
     else:
-        # get model input shape for base embedding or image inputs
-        if model_options["use_embeddings"]:
-            for x_batch, _ in background_train_ds.take(1):
-                model_options["base_embed_size"] = int(
-                    tf.shape(x_batch)[1].numpy())
-
-            input_shape = [model_options["base_embed_size"]]
-        else:
-            input_shape = [
-                model_options["crop_size"], model_options["crop_size"], 3]
-
-        vision_network = create_model(model_options, input_shape=input_shape)
+        vision_network = create_vision_network(model_options)
 
         # create tracking variables
         initial_model = True
@@ -469,19 +522,31 @@ def train(model_options, output_dir, model_file=None,
     # compile model to store optimizer with model when saving
     vision_network.compile(optimizer=optimizer, loss=triplet_loss)
 
-    # wrap few-shot model for background training
-    vision_few_shot_model = vision_cnn.FewShotModel(
+    # create few-shot model from vision network for background training
+    vision_few_shot_model = base.FewShotModel(
         vision_network, triplet_loss)
 
-    # get embedding function for one-shot validation and early stopping
+    # test model on one-shot validation task prior to training
     if model_options["one_shot_validation"]:
-        embedding_func = get_embedding_function(vision_network, model_options)
+        data_preprocess_func = get_data_preprocess_func(model_options)
+        embedding_model_func = create_embedding_model
 
-        # test model on one-shot validation task prior to any training
-        val_task_accuracy, _, conf_interval_95 = experiments.test_l_way_k_shot(
-            dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N,
-            num_episodes=FLAGS.episodes, metric="cosine",
-            data_preprocess_func=embedding_func)
+        # create few-shot model from vision network for one-shot validation
+        if FLAGS.fine_tune_steps is not None:
+            test_few_shot_model = create_fine_tune_model(
+                model_options, vision_few_shot_model.model)
+        else:
+            test_few_shot_model = base.FewShotModel(
+                vision_few_shot_model.model, None, mc_dropout=FLAGS.mc_dropout)
+
+        val_task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
+            dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N, num_episodes=FLAGS.episodes,
+            k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric,
+            model=test_few_shot_model,
+            data_preprocess_func=data_preprocess_func,
+            embedding_model_func=embedding_model_func,
+            fine_tune_steps=FLAGS.fine_tune_steps,
+            fine_tune_lr=FLAGS.fine_tune_lr)
 
         logging.log(
             logging.INFO,
@@ -499,7 +564,7 @@ def train(model_options, output_dir, model_file=None,
             os.path.join(output_dir, "model_options.json"), model_options)
 
         # also store initial model for probing and things
-        base.save_model(
+        model_utils.save_model(
             vision_few_shot_model.model, output_dir, 0, 0, "not tested", 0., 0.,
             name="initial_model")
 
@@ -545,24 +610,41 @@ def train(model_options, output_dir, model_file=None,
 
         dev_loss = loss_metric.result().numpy()
 
-        # validate model on one-shot dev task
+        # validate model on one-shot dev task if specified
         if model_options["one_shot_validation"]:
-            val_task_accuracy, _, conf_interval_95 = experiments.test_l_way_k_shot(
+
+            if FLAGS.fine_tune_steps is not None:
+                test_few_shot_model = create_fine_tune_model(
+                    model_options, vision_few_shot_model.model)
+            else:
+                test_few_shot_model = base.FewShotModel(
+                    vision_few_shot_model.model, None,
+                    mc_dropout=FLAGS.mc_dropout)
+
+            val_task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
                 dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N,
-                num_episodes=FLAGS.episodes, metric="cosine",
-                data_preprocess_func=embedding_func)
+                num_episodes=FLAGS.episodes, k_neighbours=FLAGS.k_neighbours,
+                metric=FLAGS.metric, model=test_few_shot_model,
+                data_preprocess_func=data_preprocess_func,
+                embedding_model_func=embedding_model_func,
+                fine_tune_steps=FLAGS.fine_tune_steps,
+                fine_tune_lr=FLAGS.fine_tune_lr)
 
             val_score = val_task_accuracy
             val_metric = f"{FLAGS.L}-way {FLAGS.K}-shot accuracy"
+
+            if val_score >= best_val_score:
+                best_val_score = val_score
+                best_model = True
 
         # otherwise, validate on siamese task
         else:
             val_score = dev_loss
             val_metric = "loss"
 
-        if val_score >= best_val_score:
-            best_val_score = val_score
-            best_model = True
+            if val_score <= best_val_score:
+                best_val_score = val_score
+                best_model = True
 
         # log results
         logging.log(logging.INFO, f"Train: Loss: {train_loss:.6f}")
@@ -590,36 +672,36 @@ def train(model_options, output_dir, model_file=None,
                         val_task_accuracy, step=global_step)
 
         # store model and results
-        base.save_model(
+        model_utils.save_model(
             vision_few_shot_model.model, output_dir, epoch + 1, global_step,
             val_metric, val_score, best_val_score, name="model")
 
         if best_model:
             best_model = False
-            base.save_model(
+            model_utils.save_model(
                 vision_few_shot_model.model, output_dir, epoch + 1, global_step,
                 val_metric, val_score, best_val_score, name="best_model")
 
 
 def embed(model_options, output_dir, model_file, model_step_file):
-    """Load siamese model and extract embeddings."""
+    """Load siamese image similarity model and extract embeddings."""
 
     # get base embeddings directory if specified, otherwise embed images
     embed_dir = None
-    if model_options["base_dir"] is not None and model_options["use_embeddings"]:
-        embed_dir = os.path.join(model_options["base_dir"], "embed", "dense")
+    if model_options["use_embeddings"]:
+        # load embeddings from dense layer of base model
+        embed_dir = os.path.join(
+            model_options["base_dir"], "embed", "dense")
 
     # load model
-    triplet_loss = losses.triplet_semihard_loss(
-        margin=model_options["margin"], metric=model_options["metric"])
-
-    vision_network, _ = base.load_model(
+    vision_network, _ = model_utils.load_model(
         model_file=os.path.join(output_dir, model_file),
         model_step_file=os.path.join(output_dir, model_step_file),
-        loss=triplet_loss)
+        loss=get_training_objective(model_options))
 
-    # get model embedding function
-    embedding_func = get_embedding_function(vision_network, model_options)
+    # get model embedding model and data preprocessing
+    embedding_model = create_embedding_model(vision_network)
+    data_preprocess_func = get_data_preprocess_func(model_options)
 
     # load image datasets and compute embeddings
     for data in ["flickr8k", "flickr30k", "mscoco"]:
@@ -684,7 +766,8 @@ def embed(model_options, output_dir, model_file, model_step_file):
             start_time = time.time()
             paths, embeddings = [], []
             for path_batch in tqdm(path_ds, total=num_samples):
-                path_embeddings = embedding_func(path_batch)
+                path_embeddings = embedding_model.predict(
+                    data_preprocess_func(path_batch))
 
                 paths.extend(path_batch.numpy())
                 embeddings.extend(path_embeddings.numpy())
@@ -692,8 +775,8 @@ def embed(model_options, output_dir, model_file, model_step_file):
 
             logging.log(
                 logging.INFO,
-                f"Computed embeddings ({FLAGS.embed_layer}) for {data} {subset}"
-                f" in {end_time - start_time:.4f} seconds")
+                f"Computed embeddings for {data} {subset} in "
+                f"{end_time - start_time:.4f} seconds")
 
             # serialize and write embeddings to TFRecord files
             for path, embedding in zip(paths, embeddings):
@@ -711,12 +794,14 @@ def embed(model_options, output_dir, model_file, model_step_file):
 
 
 def test(model_options, output_dir, model_file, model_step_file):
-    """Load and test siamese model for one-shot learning."""
+    """Load and test siamese image similarity model for one-shot learning."""
 
     # get base embeddings directory if specified, otherwise embed images
     embed_dir = None
-    if model_options["base_dir"] is not None and model_options["use_embeddings"]:
-        embed_dir = os.path.join(model_options["base_dir"], "embed", "dense")
+    if model_options["use_embeddings"]:
+        # load embeddings from dense layer of base model
+        embed_dir = os.path.join(
+            model_options["base_dir"], "embed", "dense")
 
     # load Flickr 8k one-shot experiment
     one_shot_exp = flickr_vision.FlickrVision(
@@ -725,22 +810,32 @@ def test(model_options, output_dir, model_file, model_step_file):
         embed_dir=embed_dir)
 
     # load model
-    triplet_loss = losses.triplet_semihard_loss(
-        margin=model_options["margin"], metric=model_options["metric"])
-
-    vision_network, _ = base.load_model(
+    vision_network, _ = model_utils.load_model(
         model_file=os.path.join(output_dir, model_file),
         model_step_file=os.path.join(output_dir, model_step_file),
-        loss=triplet_loss)
+        loss=get_training_objective(model_options))
 
-    # get model embedding function
-    embedding_func = get_embedding_function(vision_network, model_options)
+    data_preprocess_func = get_data_preprocess_func(model_options)
+    embedding_model_func = create_embedding_model
+
+    # create few-shot model from vision network for one-shot testing
+    if FLAGS.fine_tune_steps is not None:
+        test_few_shot_model = create_fine_tune_model(
+            model_options, vision_network)
+    else:
+        test_few_shot_model = base.FewShotModel(
+            vision_network, None, mc_dropout=FLAGS.mc_dropout)
+
+    logging.log(logging.INFO, "Created few-shot model from vision network")
+    test_few_shot_model.model.summary()
 
     # test model on L-way K-shot task
-    task_accuracy, _, conf_interval_95 = experiments.test_l_way_k_shot(
+    task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
         one_shot_exp, FLAGS.K, FLAGS.L, n=FLAGS.N, num_episodes=FLAGS.episodes,
-        metric="cosine", num_neighbours=FLAGS.k_neighbours,
-        data_preprocess_func=embedding_func)
+        k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric,
+        model=test_few_shot_model, data_preprocess_func=data_preprocess_func,
+        embedding_model_func=embedding_model_func,
+        fine_tune_steps=FLAGS.fine_tune_steps, fine_tune_lr=FLAGS.fine_tune_lr)
 
     logging.log(
         logging.INFO,
@@ -763,7 +858,7 @@ def main(argv):
     model_found = False
     # no prior run specified, train model
     if FLAGS.output_dir is None:
-        if FLAGS.target in ["test", "embed", "validate"]:
+        if FLAGS.target != "train":
             raise ValueError(
                 f"Target `{FLAGS.target}` requires --output_dir to be specified.")
 
@@ -809,7 +904,7 @@ def main(argv):
             model_options = file_io.read_json(
                 os.path.join(output_dir, "model_options.json"))
 
-        elif FLAGS.target in ["test", "embed", "validate"]:
+        elif FLAGS.target != "train":
             raise ValueError(
                 f"Target `{FLAGS.target}` specified but `{model_file}` not "
                 f"found in {output_dir}.")

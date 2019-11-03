@@ -31,7 +31,8 @@ def create_davenet_audio_network(
 
     if batch_norm_spectrogram:  # TODO make sure this results in [1, num_channels] params
         model_layers.append(tf.keras.layers.BatchNormalization(**input_kwargs))
-        input_kwargs.pop("input_shape")
+        if "input_shape" in input_kwargs:
+            input_kwargs.pop("input_shape")
 
     model_layers.append(
         tf.keras.layers.Conv1D(
