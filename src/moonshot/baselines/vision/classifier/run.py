@@ -80,7 +80,7 @@ DEFAULT_OPTIONS = {
 
 # one-shot evaluation options
 flags.DEFINE_integer("episodes", 400, "number of L-way K-shot learning episodes")
-flags.DEFINE_integer("L", 5, "number of classes to sample in a task episode (L-way)")
+flags.DEFINE_integer("L", 10, "number of classes to sample in a task episode (L-way)")
 flags.DEFINE_integer("K", 1, "number of task learning samples per class (K-shot)")
 flags.DEFINE_integer("N", 15, "number of task evaluation samples")
 flags.DEFINE_integer("k_neighbours", 1, "number of nearest neighbours to consider")

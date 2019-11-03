@@ -53,13 +53,13 @@ DEFAULT_OPTIONS = {
     # DAVEnet spoken word classifier
     "batch_norm_spectrogram": True,
     "batch_norm_conv": True,
-    "downsample": True,
+    "downsample": False,
     "embedding_dim": 1024,
     "padding": "same",
     "dense_units": [2048],  # hidden layers on top of DAVEnet base network (followed by logits)
     "dropout_rate": 0.2,
     # objective
-    "cross_entropy_label_smoothing": 0.0,
+    "cross_entropy_label_smoothing": 0.1,
     # training
     "learning_rate": 3e-4,
     "decay_steps": 4000,  # TODO  # slightly less than two epochs
@@ -72,7 +72,7 @@ DEFAULT_OPTIONS = {
 
 # one-shot evaluation options
 flags.DEFINE_integer("episodes", 400, "number of L-way K-shot learning episodes")
-flags.DEFINE_integer("L", 5, "number of classes to sample in a task episode (L-way)")
+flags.DEFINE_integer("L", 10, "number of classes to sample in a task episode (L-way)")
 flags.DEFINE_integer("K", 1, "number of task learning samples per class (K-shot)")
 flags.DEFINE_integer("N", 15, "number of task evaluation samples")
 flags.DEFINE_integer("k_neighbours", 1, "number of nearest neighbours to consider")
@@ -85,7 +85,7 @@ flags.DEFINE_enum("speaker_mode", "baseline", ["baseline", "difficult", "distrac
 
 # speech features (for train target)
 flags.DEFINE_enum("features", "mfcc", ["mfcc", "fbank"], "type of processed speech features")
-flags.DEFINE_integer("max_length", 140, "length ro re-interpolate or crop segments")
+flags.DEFINE_integer("max_length", 140, "length to re-interpolate or crop segments")
 flags.DEFINE_enum("scaling", None, ["global", "features", "segment", "segment_mean"],
                   "type of feature scaling applied to speech segments")
 
@@ -561,19 +561,126 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
                 speech_few_shot_model.model, output_dir, epoch + 1, global_step,
                 val_metric, val_score, best_val_score, name="best_model")
 
-    import pdb; pdb.set_trace()
-
 
 def embed(model_options, output_dir, model_file, model_step_file):
     """Load spoken word classification model and extract embeddings."""
 
-    pass  # TODO
+    # load model
+    speech_network, _ = model_utils.load_model(
+        model_file=os.path.join(output_dir, model_file),
+        model_step_file=os.path.join(output_dir, model_step_file),
+        loss=get_training_objective(model_options))
+
+    # get embedding model
+    embedding_model = create_embedding_model(model_options, speech_network)
+
+    # load Flickr Audio dataset and compute embeddings
+    one_shot_exp = flickr_speech.FlickrSpeech(
+        features=model_options["features"],
+        keywords_split="one_shot_evaluation")
+
+    background_train_exp = flickr_speech.FlickrSpeech(
+        features=model_options["features"], keywords_split="background_train")
+
+    background_dev_exp = flickr_speech.FlickrSpeech(
+        features=model_options["features"], keywords_split="background_dev")
+
+    subset_exp = {
+        "one_shot_evaluation": one_shot_exp,
+        "background_train": background_train_exp,
+        "background_dev": background_dev_exp,
+    }
+
+    for subset, exp in subset_exp.items():
+        embed_dir = os.path.join(
+            output_dir, "embed", FLAGS.embed_layer, "flickr_audio", subset)
+        file_io.check_create_dir(embed_dir)
+
+        unique_paths = np.unique(exp.audio_paths)
+
+        # batch audio paths for faster embedding inference
+        path_ds = tf.data.Dataset.from_tensor_slices(unique_paths)
+        path_ds = path_ds.batch(model_options["batch_size"])
+        path_ds = path_ds.prefetch(tf.data.experimental.AUTOTUNE)
+
+        num_samples = int(
+            np.ceil(len(unique_paths) / model_options["batch_size"]))
+
+        start_time = time.time()
+        paths, embeddings = [], []
+        for path_batch in tqdm(path_ds, total=num_samples):
+            path_embeddings = embedding_model.predict(path_batch)
+
+            paths.extend(path_batch.numpy())
+            embeddings.extend(path_embeddings.numpy())
+        end_time = time.time()
+
+        logging.log(
+            logging.INFO,
+            f"Computed embeddings ({FLAGS.embed_layer}) for Flickr Audio "
+            f"{subset} in {end_time - start_time:.4f} seconds")
+
+        # serialize and write embeddings to TFRecord files
+        for path, embedding in zip(paths, embeddings):
+            example_proto = dataset.embedding_to_example_protobuf(embedding)
+
+            path = path.decode("utf-8")
+            path = os.path.join(
+                embed_dir, f"{os.path.split(path)[1]}.tfrecord")
+
+            with tf.io.TFRecordWriter(path, options="ZLIB") as writer:
+                writer.write(example_proto.SerializeToString())
+
+        logging.log(logging.INFO, f"Embeddings stored at: {embed_dir}")
 
 
 def test(model_options, output_dir, model_file, model_step_file):
     """Load and test spoken word classification model for one-shot learning."""
 
-    pass  # TODO
+    # load Flickr Audio one-shot experiment
+    one_shot_exp = flickr_speech.FlickrSpeech(
+        features=model_options["features"],
+        keywords_split="one_shot_evaluation", embed_dir=None)
+
+    # load model
+    speech_network, _ = model_utils.load_model(
+        model_file=os.path.join(output_dir, model_file),
+        model_step_file=os.path.join(output_dir, model_step_file),
+        loss=get_training_objective(model_options))
+
+    data_preprocess_func = get_data_preprocess_func(model_options)
+    embedding_model_func = lambda speech_network: create_embedding_model(
+        model_options, speech_network)
+
+    # create few-shot model from speech network for one-shot testing
+    if FLAGS.fine_tune_steps is not None:
+        test_few_shot_model = create_fine_tune_model(
+            model_options, speech_network, num_classes=FLAGS.L)
+    else:
+        test_few_shot_model = base.FewShotModel(
+            speech_network, None, mc_dropout=FLAGS.mc_dropout)
+
+    classification = False
+    if FLAGS.classification:
+        assert FLAGS.embed_layer in ["logits", "softmax"]
+        classification = True
+
+    logging.log(logging.INFO, "Created few-shot model from speech network")
+    test_few_shot_model.model.summary()
+
+    # test model on L-way K-shot task
+    task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
+        one_shot_exp, FLAGS.K, FLAGS.L, n=FLAGS.N, num_episodes=FLAGS.episodes,
+        k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric,
+        classification=classification, model=test_few_shot_model,
+        data_preprocess_func=data_preprocess_func,
+        embedding_model_func=embedding_model_func,
+        fine_tune_steps=FLAGS.fine_tune_steps, fine_tune_lr=FLAGS.fine_tune_lr)
+
+    logging.log(
+        logging.INFO,
+        f"{FLAGS.L}-way {FLAGS.K}-shot accuracy after {FLAGS.episodes} "
+        f"episodes: {task_accuracy:.3%} +- {conf_interval_95*100:.4f}")
 
 
 def main(argv):
