@@ -28,8 +28,18 @@ def create_inceptionv3_network(
     weights = "imagenet" if pretrained else None
     input_shape = None if input_shape is None else tuple(input_shape)
 
+    # NOTE: inject `layers=tf.keras.layers` to use TF 2.0 behaviour since
+    # keras_applications seems to be using the old TF 1.0 layers.
+    # Specifically, this is useful to replace the v1.0 batch normalisation layer
+    # with the v2.0 layer which uses the moving mean and variance to normalise
+    # the current batch when the layer is frozen (`trainable = False`). This is
+    # the expected behaviour when fine-tuning! See here for more information:
+    # https://github.com/tensorflow/tensorflow/blob/eda53c63dab8b364872ede8e423e4fed5d1686f7/tensorflow/python/keras/layers/normalization_v2.py#L26-L65
+    # as well as here:
+    # https://github.com/keras-team/keras/pull/9965#issuecomment-549126009
     return tf.keras.applications.inception_v3.InceptionV3(
-        weights=weights, include_top=include_top, input_shape=input_shape)
+        weights=weights, include_top=include_top, input_shape=input_shape,
+        layers=tf.keras.layers)
 
 
 def freeze_weights(inception_model, trainable=None):
