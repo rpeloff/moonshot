@@ -36,12 +36,6 @@ from moonshot.utils import logging as logging_utils
 FLAGS = flags.FLAGS
 
 
-# model options
-DEFAULT_OPTIONS = {
-    # that magic number
-    "seed": 42
-}
-
 # one-shot evaluation options
 flags.DEFINE_integer("episodes", 400, "number of L-way K-shot learning episodes")
 flags.DEFINE_integer("L", 10, "number of classes to sample in a task episode (L-way)")
@@ -52,6 +46,9 @@ flags.DEFINE_string("metric", "cosine", "distance metric to use for nearest neig
 flags.DEFINE_boolean("random", False, "random action baseline")
 flags.DEFINE_enum("speaker_mode", "baseline", ["baseline", "difficult", "distractor"],
                   "type of speakers selected in a task episode")
+
+# model testing options
+flags.DEFINE_integer("seed", 42, "that magic number")
 
 # speech features
 flags.DEFINE_enum("features", "mfcc", ["mfcc", "fbank"], "type of processed speech features")
@@ -67,39 +64,32 @@ flags.DEFINE_string("output_dir", None, "directory where logs will be stored"
 flags.DEFINE_bool("debug", False, "log with debug verbosity level")
 
 
-def get_data_preprocess_func(model_options):
-    """Create data batch preprocessing function for input to the speech network.
+def data_preprocess_func(speech_paths):
+    """Data batch preprocessing function for input to the speech network.
 
-    Returns function `data_preprocess_func` that takes a batch of file paths,
-    loads speech features and preprocesses the features.
+    Takes a batch of file paths, loads the speech features and preprocesses the
+    features.
     """
+    speech_features = []
+    for speech_path in speech_paths:
+        speech_features.append(
+            dataset.load_and_preprocess_speech(
+                speech_path, features=FLAGS.features,
+                max_length=FLAGS.max_length,
+                reinterpolate=FLAGS.reinterpolate,
+                scaling=FLAGS.scaling))
 
-    def data_preprocess_func(speech_paths):
-        speech_features = []
-        for speech_path in speech_paths:
-            speech_features.append(
-                dataset.load_and_preprocess_speech(
-                    speech_path, features=model_options["features"],
-                    max_length=model_options["max_length"],
-                    reinterpolate=model_options["reinterpolate"],
-                    scaling=model_options["scaling"]))
-
-        return np.stack(speech_features)
-
-    return data_preprocess_func
+    return np.stack(speech_features)
 
 
-def test(model_options):
+def test():
     """Test baseline speech DTW matching model for one-shot learning."""
 
     # load Flickr Audio one-shot experiment
     one_shot_exp = flickr_speech.FlickrSpeech(
-        features=model_options["features"],
+        features=FLAGS.features,
         keywords_split="one_shot_evaluation", embed_dir=None,
-        speaker_mode=model_options["speaker_mode"])
-
-    # get data preprocessing function
-    data_preprocess_func = get_data_preprocess_func(model_options)
+        speaker_mode=FLAGS.speaker_mode)
 
     # test model on L-way K-shot task
     task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
@@ -134,24 +124,23 @@ def main(argv):
     else:
         output_dir = FLAGS.output_dir
 
-    # add flag options to model options
-    model_options = DEFAULT_OPTIONS
-
+    # print flag options
+    flag_options = {}
     for flag in FLAGS.get_key_flags_for_module(__file__):
-        model_options[flag.name] = flag.value
+        flag_options[flag.name] = flag.value
 
     # logging
     logging_utils.absl_file_logger(output_dir, f"log.test")
 
     logging.log(logging.INFO, f"Model directory: {output_dir}")
-    logging.log(logging.INFO, f"Model options: {model_options}")
+    logging.log(logging.INFO, f"Flag options: {flag_options}")
 
     # set seeds for reproducibility
-    np.random.seed(model_options["seed"])
-    tf.random.set_seed(model_options["seed"])
+    np.random.seed(FLAGS.seed)
+    tf.random.set_seed(FLAGS.seed)
 
     # test baseline matching model (no background training step)
-    test(model_options)
+    test()
 
 
 if __name__ == "__main__":

@@ -169,21 +169,6 @@ def load_and_preprocess_speech(speech_path, features, max_length=130,
 
     speech_features = np.load(speech_path)
 
-    # center pad speech features (or crop if longer than max length)
-    if reinterpolate is None:
-        # add "height" dim
-        speech_features = tf.expand_dims(speech_features, axis=0)
-        # crop/pad the speech features "image"
-        speech_features = tf.image.resize_with_crop_or_pad(
-            speech_features, target_height=1, target_width=max_length)
-        # remove "height" dim
-        speech_features = tf.squeeze(speech_features, axis=0)
-
-    # re-interpolate speech features to max length
-    else:
-        speech_features = fast_dtw.dtw_reinterp2d(
-            speech_features, max_length, interp=reinterpolate)
-
     # scale speech features
     if scaling == "global":
         speech_features -= flickr_speech.train_global_mean[features]
@@ -198,9 +183,20 @@ def load_and_preprocess_speech(speech_path, features, max_length=130,
     elif scaling == "segment_mean":
         speech_features = speech_features - np.mean(speech_features)
 
-    # TODO
-    # if spec_augment:
-    #     features = spec_augment(features)
+    # center pad speech features (or crop if longer than max length)
+    if reinterpolate is None:
+        # add "height" dim
+        speech_features = tf.expand_dims(speech_features, axis=0)
+        # crop/pad the speech features "image"
+        speech_features = tf.image.resize_with_crop_or_pad(
+            speech_features, target_height=1, target_width=max_length)
+        # remove "height" dim
+        speech_features = tf.squeeze(speech_features, axis=0)
+
+    # re-interpolate speech features to max length
+    else:
+        speech_features = fast_dtw.dtw_reinterp2d(
+            speech_features, max_length, interp=reinterpolate)
 
     return speech_features
 

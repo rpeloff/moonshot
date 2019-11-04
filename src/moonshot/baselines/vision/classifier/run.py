@@ -785,15 +785,17 @@ def main(argv):
                 f"Target `{FLAGS.target}` specified but `{model_file}` not "
                 f"found in {output_dir}.")
 
-    # add flag options to model options
-    # for flag in FLAGS.get_key_flags_for_module(__file__):  # TODO: only values not yet set?
-    #     model_options[flag.name] = flag.value
+    # gather flag options
+    flag_options = {}
+    for flag in FLAGS.get_key_flags_for_module(__file__):
+        flag_options[flag.name] = flag.value
 
     # logging
     logging_utils.absl_file_logger(output_dir, f"log.{FLAGS.target}")
 
     logging.log(logging.INFO, f"Model directory: {output_dir}")
     logging.log(logging.INFO, f"Model options: {model_options}")
+    logging.log(logging.INFO, f"Flag options: {flag_options}")
 
     tf_writer = None
     if FLAGS.tensorboard and FLAGS.target == "train":

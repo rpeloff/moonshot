@@ -36,15 +36,6 @@ from moonshot.utils import logging as logging_utils
 FLAGS = flags.FLAGS
 
 
-# model options
-DEFAULT_OPTIONS = {
-    # preprocessing
-    "crop_size": 299,  # 32,
-    # that magic number
-    "seed": 42
-}
-
-
 # one-shot evaluation options
 flags.DEFINE_integer("episodes", 400, "number of L-way K-shot learning episodes")
 flags.DEFINE_integer("L", 10, "number of classes to sample in a task episode (L-way)")
@@ -54,36 +45,35 @@ flags.DEFINE_integer("k_neighbours", 1, "number of nearest neighbours to conside
 flags.DEFINE_string("metric", "cosine", "distance metric to use for nearest neighbours matching")
 flags.DEFINE_boolean("random", False, "random action baseline")
 
+# model testing options
+flags.DEFINE_integer("crop_size", 256, "size to resize image square crop taken along shortest edge")
+flags.DEFINE_integer("seed", 42, "that magic number")
+
 # logging options
 flags.DEFINE_string("output_dir", None, "directory where logs will be stored"
                     "(defaults to logs/<unique run id>)")
 flags.DEFINE_bool("debug", False, "log with debug verbosity level")
 
 
-def get_data_preprocess_func(model_options):
-    """Create data batch preprocessing function for input to the baseline model.
+def data_preprocess_func(image_paths):
+    """Data batch preprocessing function for input to the baseline model.
 
-    Returns function `data_preprocess_func` that takes a batch of file paths,
-    loads image data and preprocesses the images.
+    Takes a batch of file paths, loads image data and preprocesses the images.
     """
+    images = []
+    for image_path in image_paths:
+        images.append(
+            dataset.load_and_preprocess_image(
+                image_path, crop_size=FLAGS.crop_size))
 
-    def data_preprocess_func(image_paths):
-        images = []
-        for image_path in image_paths:
-            images.append(
-                dataset.load_and_preprocess_image(
-                    image_path, crop_size=model_options["crop_size"]))
+    # stack and flatten image arrays
+    images = np.stack(images)
+    images = np.reshape(images, (images.shape[0], -1))
 
-        # stack and flatten image arrays
-        images = np.stack(images)
-        images = np.reshape(images, (images.shape[0], -1))
-
-        return images
-
-    return data_preprocess_func
+    return images
 
 
-def test(model_options):
+def test():
     """Test baseline image matching model for one-shot learning."""
 
     # load Flickr 8k one-shot experiment
@@ -91,9 +81,6 @@ def test(model_options):
         keywords_split="one_shot_evaluation",
         flickr8k_image_dir=os.path.join("data", "external", "flickr8k_images"),
         embed_dir=None)
-
-    # get data preprocessing function
-    data_preprocess_func = get_data_preprocess_func(model_options)
 
     # test model on L-way K-shot task
     task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
@@ -128,24 +115,23 @@ def main(argv):
     else:
         output_dir = FLAGS.output_dir
 
-    # add flag options to model options
-    model_options = DEFAULT_OPTIONS
-
+    # print flag options
+    flag_options = {}
     for flag in FLAGS.get_key_flags_for_module(__file__):
-        model_options[flag.name] = flag.value
+        flag_options[flag.name] = flag.value
 
     # logging
     logging_utils.absl_file_logger(output_dir, f"log.test")
 
     logging.log(logging.INFO, f"Model directory: {output_dir}")
-    logging.log(logging.INFO, f"Model options: {model_options}")
+    logging.log(logging.INFO, f"Flag options: {flag_options}")
 
     # set seeds for reproducibility
-    np.random.seed(model_options["seed"])
-    tf.random.set_seed(model_options["seed"])
+    np.random.seed(FLAGS.seed)
+    tf.random.set_seed(FLAGS.seed)
 
     # test baseline matching model (no background training step)
-    test(model_options)
+    test()
 
 
 if __name__ == "__main__":

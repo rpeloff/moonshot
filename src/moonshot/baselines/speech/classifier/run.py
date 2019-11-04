@@ -47,7 +47,11 @@ FLAGS = flags.FLAGS
 # model options (default if not loaded)
 DEFAULT_OPTIONS = {
     # training data
+    "features": "mfcc",  # one of ["mfcc", "fbank"]
     "one_shot_validation": True,
+    # preprocessing
+    "max_length": 140,  # length to pad/crop segments
+    "scaling": None,  # one of ["global", "features", "segment", "segment_mean"]
     # data pipeline
     "batch_size": 32,
     # DAVEnet spoken word classifier
@@ -83,12 +87,6 @@ flags.DEFINE_bool("classification", False, "whether to use softmax predictions a
                   "(requires fine-tuning of new logits layer)")
 flags.DEFINE_enum("speaker_mode", "baseline", ["baseline", "difficult", "distractor"],
                   "type of speakers selected in a task episode")
-
-# speech features (for train target)
-flags.DEFINE_enum("features", "mfcc", ["mfcc", "fbank"], "type of processed speech features")
-flags.DEFINE_integer("max_length", 140, "length to re-interpolate or crop segments")
-flags.DEFINE_enum("scaling", None, ["global", "features", "segment", "segment_mean"],
-                  "type of feature scaling applied to speech segments")
 
 # model train/test options
 flags.DEFINE_enum("embed_layer", "dense", ["avg_pool", "dense", "logits", "softmax"],
@@ -256,7 +254,7 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
 
     # load training data
     train_exp, dev_exp = dataset.create_flickr_audio_train_data(
-        model_options["features"], speaker_mode=model_options["speaker_mode"])
+        model_options["features"], speaker_mode=FLAGS.speaker_mode)
 
     train_labels = []
     for keyword in train_exp.keywords_set[3]:
@@ -643,7 +641,7 @@ def test(model_options, output_dir, model_file, model_step_file):
     one_shot_exp = flickr_speech.FlickrSpeech(
         features=model_options["features"],
         keywords_split="one_shot_evaluation", embed_dir=None,
-        speaker_mode=model_options["speaker_mode"])
+        speaker_mode=FLAGS.speaker_mode)
 
     # load model
     speech_network, _ = model_utils.load_model(
@@ -729,15 +727,17 @@ def main(argv):
                 f"Target `{FLAGS.target}` specified but `{model_file}` not "
                 f"found in {output_dir}.")
 
-    # add flag options to model options
-    # for flag in FLAGS.get_key_flags_for_module(__file__):  # TODO: only values not yet set?
-    #     model_options[flag.name] = flag.value
+    # gather flag options
+    flag_options = {}
+    for flag in FLAGS.get_key_flags_for_module(__file__):
+        flag_options[flag.name] = flag.value
 
     # logging
     logging_utils.absl_file_logger(output_dir, f"log.{FLAGS.target}")
 
     logging.log(logging.INFO, f"Model directory: {output_dir}")
     logging.log(logging.INFO, f"Model options: {model_options}")
+    logging.log(logging.INFO, f"Flag options: {flag_options}")
 
     tf_writer = None
     if FLAGS.tensorboard and FLAGS.target == "train":

@@ -250,7 +250,7 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
 
     # load training data (embed dir determines if mfcc/fbank)
     train_exp, dev_exp = dataset.create_flickr_audio_train_data(
-        "mfcc", embed_dir=embed_dir, speaker_mode=model_options["speaker_mode"])
+        "mfcc", embed_dir=embed_dir, speaker_mode=FLAGS.speaker_mode)
 
     train_labels = []
     for keyword in train_exp.keywords_set[3]:
@@ -651,7 +651,7 @@ def test(model_options, output_dir, model_file, model_step_file):
     # load Flickr Audio one-shot experiment
     one_shot_exp = flickr_speech.FlickrSpeech(
         features="mfcc", keywords_split="one_shot_evaluation",
-        embed_dir=embed_dir, speaker_mode=model_options["speaker_mode"])
+        embed_dir=embed_dir, speaker_mode=FLAGS.speaker_mode)
 
     # load model
     speech_network, _ = model_utils.load_model(
@@ -718,9 +718,15 @@ def main(argv):
 
         model_options = DEFAULT_OPTIONS
 
+        # add flag options to model options
+        model_options["base_dir"] = FLAGS.base_dir
+
         if FLAGS.base_dir is None:
             raise ValueError(
                 f"Target `{FLAGS.target}` requires --base_dir to be specified.")
+
+        model_options["base_model"] = (
+            "best_model" if FLAGS.load_best else "model")
 
     # prior run specified, resume training or test model
     else:
@@ -745,18 +751,17 @@ def main(argv):
                 f"Target `{FLAGS.target}` specified but `{model_file}` not "
                 f"found in {output_dir}.")
 
-    # add flag options to model options
-    # for flag in FLAGS.get_key_flags_for_module(__file__):  # TODO: only values not yet set?
-    #     model_options[flag.name] = flag.value
-
-    model_options["base_model"] = (
-        "best_model" if FLAGS.load_best else "model")
+    # gather flag options
+    flag_options = {}
+    for flag in FLAGS.get_key_flags_for_module(__file__):
+        flag_options[flag.name] = flag.value
 
     # logging
     logging_utils.absl_file_logger(output_dir, f"log.{FLAGS.target}")
 
     logging.log(logging.INFO, f"Model directory: {output_dir}")
     logging.log(logging.INFO, f"Model options: {model_options}")
+    logging.log(logging.INFO, f"Flag options: {flag_options}")
 
     tf_writer = None
     if FLAGS.tensorboard and FLAGS.target == "train":
