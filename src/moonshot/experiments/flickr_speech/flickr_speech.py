@@ -132,11 +132,11 @@ class FlickrSpeech(base.Experiment):
         # load audio embedding paths if specified
         if embed_dir is not None:
             embed_paths = []
-            for audio_uid in keywords_set[0]:
+            for audio_path in audio_paths:
                 embed_paths.append(
                     os.path.join(
                         embed_dir, "flickr_audio", f"{keywords_split}",
-                        f"{audio_uid}.tfrecord"))
+                        f"{audio_path}.tfrecord"))
                 assert os.path.exists(embed_paths[-1])
 
         self.keywords_set = tuple(np.asarray(x) for x in keywords_set)

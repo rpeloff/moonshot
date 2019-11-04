@@ -87,7 +87,8 @@ flags.DEFINE_integer("k_neighbours", 1, "number of nearest neighbours to conside
 flags.DEFINE_string("metric", "cosine", "distance metric to use for nearest neighbours matching")
 flags.DEFINE_integer("fine_tune_steps", None, "number of fine-tune gradient steps on one-shot data")
 flags.DEFINE_float("fine_tune_lr", 1e-3, "learning rate for gradient descent fine-tune")
-flags.DEFINE_bool("classification", False, "whether to use softmax predictions as match function")
+flags.DEFINE_bool("classification", False, "whether to use softmax predictions as match function"
+                  "(requires fine-tuning of new logits layer)")
 
 # model train/test options
 flags.DEFINE_enum("embed_layer", "dense", ["avg_pool", "dense", "logits", "softmax"],
@@ -442,7 +443,6 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
 
     # store model options on first run
     if initial_model:
-        # store model options
         file_io.write_json(
             os.path.join(output_dir, "model_options.json"), model_options)
 
