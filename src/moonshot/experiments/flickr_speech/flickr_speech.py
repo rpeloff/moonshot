@@ -136,7 +136,7 @@ class FlickrSpeech(base.Experiment):
                 embed_paths.append(
                     os.path.join(
                         embed_dir, "flickr_audio", f"{keywords_split}",
-                        f"{audio_path}.tfrecord"))
+                        f"{os.path.split(audio_path)[1]}.tfrecord"))
                 assert os.path.exists(embed_paths[-1])
 
         self.keywords_set = tuple(np.asarray(x) for x in keywords_set)

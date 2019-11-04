@@ -49,14 +49,14 @@ DEFAULT_OPTIONS = {
     # data pipeline
     "batch_size": 32*4,  # used if "balanced": False
     "balanced": True,
-    "p": 32,
-    "k": 4,
+    "p": 64,
+    "k": 8,
     "num_batches": 2500,
     # siamese model
     "dense_units": [1024],  # hidden layers on top of base network (last layer is linear)
     "dropout_rate": 0.2,
     # triplet objective
-    "margin": 0.2,
+    "margin": 1.,
     "metric": "squared_euclidean",  # or "euclidean", "cosine",
     # training
     "learning_rate": 3e-4,
@@ -250,7 +250,7 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
 
     # load training data
     train_exp, dev_exp = dataset.create_flickr_audio_train_data(
-        model_options["data"], embed_dir=embed_dir)
+        "mfcc", embed_dir=embed_dir)  # embed dir determines if mfcc/fbank 
 
     train_labels = []
     for keyword in train_exp.keywords_set[3]:
@@ -582,14 +582,14 @@ def embed(model_options, output_dir, model_file, model_step_file):
 
     # load Flickr Audio dataset and compute embeddings
     one_shot_exp = flickr_speech.FlickrSpeech(
-        features=model_options["features"],
-        keywords_split="one_shot_evaluation")
+        features="mfcc", keywords_split="one_shot_evaluation",
+        embed_dir=embed_dir)
 
     background_train_exp = flickr_speech.FlickrSpeech(
-        features=model_options["features"], keywords_split="background_train")
+        features="mfcc", keywords_split="background_train", embed_dir=embed_dir)
 
     background_dev_exp = flickr_speech.FlickrSpeech(
-        features=model_options["features"], keywords_split="background_dev")
+        features="mfcc", keywords_split="background_dev", embed_dir=embed_dir)
 
     subset_exp = {
         "one_shot_evaluation": one_shot_exp,
@@ -650,8 +650,8 @@ def test(model_options, output_dir, model_file, model_step_file):
 
     # load Flickr Audio one-shot experiment
     one_shot_exp = flickr_speech.FlickrSpeech(
-        features=model_options["features"],
-        keywords_split="one_shot_evaluation", embed_dir=embed_dir)
+        features="mfcc", keywords_split="one_shot_evaluation",
+        embed_dir=embed_dir)
 
     # load model
     speech_network, _ = model_utils.load_model(
@@ -721,7 +721,7 @@ def main(argv):
         # add flag options to model options
         model_options["base_dir"] = FLAGS.base_dir
 
-        if model_options["base_dir"] is not None:
+        if model_options["base_dir"] is None:
             raise ValueError(
                 f"Target `{FLAGS.target}` requires --base_dir to be specified.")
 
@@ -732,16 +732,9 @@ def main(argv):
     else:
         output_dir = FLAGS.output_dir
 
-        # load current, initial or best model
-        if FLAGS.load_best:
-            model_file = "best_model.h5"
-            model_step_file = "best_model.step"
-        elif FLAGS.load_initial:
-            model_file = "initial_model.h5"
-            model_step_file = "initial_model.step"
-        else:
-            model_file = "model.h5"
-            model_step_file = "model.step"
+        # load current or best model
+        model_file = "best_model.h5" if FLAGS.load_best else "model.h5"
+        model_step_file = "best_model.step" if FLAGS.load_best else "model.step"
 
         if FLAGS.base_dir is not None:
             raise ValueError(
