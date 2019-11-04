@@ -206,7 +206,7 @@ def dtw_cdist(X_a, X_b, metric="cosine"):
     matrix `X_b`. Observations may have variable number of timesteps.
 
     Output has shape [`m_a`, `m_b`], where each entry `[i, j]` is the warped
-    path distance `dtw_dist(X_a[i], X_b[j])` according to the specified metric. 
+    path distance `dtw_dist(X_a[i], X_b[j])` according to the specified metric.
     """
     if callable(metric):
         dtw_dist = metric

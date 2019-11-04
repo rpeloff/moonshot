@@ -785,6 +785,11 @@ def main(argv):
                 f"Target `{FLAGS.target}` specified but `{model_file}` not "
                 f"found in {output_dir}.")
 
+    # add flag options to model options
+    # for flag in FLAGS.get_key_flags_for_module(__file__):  # TODO: only values not yet set?
+    #     model_options[flag.name] = flag.value
+
+    # logging
     logging_utils.absl_file_logger(output_dir, f"log.{FLAGS.target}")
 
     logging.log(logging.INFO, f"Model directory: {output_dir}")
@@ -794,9 +799,11 @@ def main(argv):
     if FLAGS.tensorboard and FLAGS.target == "train":
         tf_writer = tf.summary.create_file_writer(output_dir)
 
+    # set seeds for reproducibility
     np.random.seed(model_options["seed"])
     tf.random.set_seed(model_options["seed"])
 
+    # run target
     if FLAGS.target == "train":
         if model_found and FLAGS.resume:
             train(model_options, output_dir, model_file=model_file,

@@ -256,7 +256,7 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
 
     # load training data
     train_exp, dev_exp = dataset.create_flickr_audio_train_data(
-        model_options["features"])
+        model_options["features"], speaker_mode=model_options["speaker_mode"])
 
     train_labels = []
     for keyword in train_exp.keywords_set[3]:
@@ -642,7 +642,8 @@ def test(model_options, output_dir, model_file, model_step_file):
     # load Flickr Audio one-shot experiment
     one_shot_exp = flickr_speech.FlickrSpeech(
         features=model_options["features"],
-        keywords_split="one_shot_evaluation", embed_dir=None)
+        keywords_split="one_shot_evaluation", embed_dir=None,
+        speaker_mode=model_options["speaker_mode"])
 
     # load model
     speech_network, _ = model_utils.load_model(
@@ -709,11 +710,6 @@ def main(argv):
 
         model_options = DEFAULT_OPTIONS
 
-        # add flag options to model options
-        model_options["features"] = FLAGS.features
-        model_options["max_length"] = FLAGS.max_length
-        model_options["scaling"] = FLAGS.scaling
-
     # prior run specified, resume training or test model
     else:
         output_dir = FLAGS.output_dir
@@ -733,6 +729,11 @@ def main(argv):
                 f"Target `{FLAGS.target}` specified but `{model_file}` not "
                 f"found in {output_dir}.")
 
+    # add flag options to model options
+    # for flag in FLAGS.get_key_flags_for_module(__file__):  # TODO: only values not yet set?
+    #     model_options[flag.name] = flag.value
+
+    # logging
     logging_utils.absl_file_logger(output_dir, f"log.{FLAGS.target}")
 
     logging.log(logging.INFO, f"Model directory: {output_dir}")
@@ -742,9 +743,11 @@ def main(argv):
     if FLAGS.tensorboard and FLAGS.target == "train":
         tf_writer = tf.summary.create_file_writer(output_dir)
 
+    # set seeds for reproducibility
     np.random.seed(model_options["seed"])
     tf.random.set_seed(model_options["seed"])
 
+    # run target
     if FLAGS.target == "train":
         if model_found and FLAGS.resume:
             train(model_options, output_dir, model_file=model_file,

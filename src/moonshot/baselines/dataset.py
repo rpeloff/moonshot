@@ -171,14 +171,18 @@ def load_and_preprocess_speech(speech_path, features, max_length=130,
 
     # center pad speech features (or crop if longer than max length)
     if reinterpolate is None:
-        speech_features = tf.expand_dims(speech_features, axis=0)  # add "height" dim
+        # add "height" dim
+        speech_features = tf.expand_dims(speech_features, axis=0)
+        # crop/pad the speech features "image"
         speech_features = tf.image.resize_with_crop_or_pad(
             speech_features, target_height=1, target_width=max_length)
-        speech_features = tf.squeeze(speech_features, axis=0)  # remove "height" dim
+        # remove "height" dim
+        speech_features = tf.squeeze(speech_features, axis=0)
 
     # re-interpolate speech features to max length
     else:
-        fast_dtw.dtw_reinterp2d(speech_features, max_length, interp=reinterpolate)
+        speech_features = fast_dtw.dtw_reinterp2d(
+            speech_features, max_length, interp=reinterpolate)
 
     # scale speech features
     if scaling == "global":
@@ -201,15 +205,17 @@ def load_and_preprocess_speech(speech_path, features, max_length=130,
     return speech_features
 
 
-def create_flickr_audio_train_data(features, embed_dir=None):
+def create_flickr_audio_train_data(features, embed_dir=None,
+                                   speaker_mode="baseline"):
     """Load train and validation Flickr audio data."""
 
     flickr_train_exp = flickr_speech.FlickrSpeech(
         features=features, keywords_split="background_train",
-        embed_dir=embed_dir)
+        embed_dir=embed_dir, speaker_mode=speaker_mode)
 
     flickr_dev_exp = flickr_speech.FlickrSpeech(
-        features=features, keywords_split="background_dev", embed_dir=embed_dir)
+        features=features, keywords_split="background_dev", embed_dir=embed_dir,
+        speaker_mode=speaker_mode)
 
     return flickr_train_exp, flickr_dev_exp
 

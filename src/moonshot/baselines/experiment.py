@@ -21,7 +21,7 @@ from moonshot.baselines import base
 
 def test_l_way_k_shot(experiment, k, l, n=15, num_episodes=400,
                       k_neighbours=1, metric="cosine", dtw=False,
-                      classification=False, model=None,
+                      classification=False, random=False, model=None,
                       data_preprocess_func=None, embedding_model_func=None,
                       fine_tune_steps=None, fine_tune_lr=1e-2,
                       reset_experiment=True):
@@ -86,14 +86,20 @@ def test_l_way_k_shot(experiment, k, l, n=15, num_episodes=400,
             x_train = task_model.predict(x_train)
             x_test = task_model.predict(x_test)
 
+        # get random action predictions (random sample train labels)
+        if random:
+            test_predict = experiment.rng.choice(
+                y_train, size=len(y_test), replace=True)
+
+        # get class predictions from logits (or softmax) test outputs
+        elif classification:
+            test_predict = tf.argmax(x_test, axis=1)
+
         # get nearest neighbour predictions
-        if not classification:
+        else:
             test_predict = base.knn(
                 x_query=x_test, x_memory=x_train, y_memory=y_train,
                 k_neighbours=k_neighbours, metric=metric, dtw=dtw)
-        # get class predictions from logits (or softmax) test outputs
-        else:
-            test_predict = tf.argmax(x_test, axis=1)
 
         # compute task accuracy and store result
         num_correct = np.sum(test_predict == y_test)
