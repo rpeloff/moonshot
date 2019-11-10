@@ -1,8 +1,8 @@
-"""Test simple vision pixel matching baseline on Flickr one-shot image task.
+"""Test unimodal vision and speech models on Flickr one-shot multimodal task.
 
 Author: Ryan Eloff
 Contact: ryan.peter.eloff@gmail.com
-Date: September 2019
+Date: October 2019
 """
 
 
@@ -27,7 +27,7 @@ import tensorflow as tf
 from moonshot.baselines import dataset
 from moonshot.baselines import experiment
 
-from moonshot.experiments.flickr_vision import flickr_vision
+from moonshot.experiments.flickr_multimodal import flickr_multimodal
 
 from moonshot.utils import file_io
 from moonshot.utils import logging as logging_utils
@@ -43,11 +43,14 @@ flags.DEFINE_integer("K", 1, "number of task learning samples per class (K-shot)
 flags.DEFINE_integer("N", 15, "number of task evaluation samples")
 flags.DEFINE_integer("k_neighbours", 1, "number of nearest neighbours to consider")
 flags.DEFINE_string("metric", "cosine", "distance metric to use for nearest neighbours matching")
-flags.DEFINE_boolean("random", False, "random action baseline")
+flags.DEFINE_enum("speaker_mode", "baseline", ["baseline", "difficult", "distractor"],
+                  "type of speakers selected in a task episode")
+flags.DEFINE_bool("unseen_match_set", False, "match set contains classes unseen in K-shot learning")
 flags.DEFINE_integer("seed", 42, "that magic number")
 
-# image preprocessing
-flags.DEFINE_integer("crop_size", 256, "size to resize image square crop taken along shortest edge")
+# speech features
+flags.DEFINE_string("vision_base_dir", None, "directory containing base vision network model")
+flags.DEFINE_string("audio_base_dir", None, "directory containing base audio network model")
 
 # logging options
 flags.DEFINE_string("output_dir", None, "directory where logs will be stored"
@@ -55,38 +58,42 @@ flags.DEFINE_string("output_dir", None, "directory where logs will be stored"
 flags.DEFINE_bool("debug", False, "log with debug verbosity level")
 
 
-def data_preprocess_func(image_paths):
+def data_preprocess_func(embed_paths):
     """Data batch preprocessing function for input to the baseline model.
 
     Takes a batch of file paths, loads image data and preprocesses the images.
     """
-    images = []
-    for image_path in image_paths:
-        images.append(
-            dataset.load_and_preprocess_image(
-                image_path, crop_size=FLAGS.crop_size))
+    embed_ds = tf.data.TFRecordDataset(
+        embed_paths, compression_type="ZLIB")
+    # map sequential to prevent optimization overhead
+    preprocess_func = lambda example: dataset.parse_embedding_protobuf(
+        example)["embed"]
+    embed_ds = embed_ds.map(preprocess_func, num_parallel_calls=8)
 
-    # stack and flatten image arrays
-    images = np.stack(images)
-    images = np.reshape(images, (images.shape[0], -1))
-
-    return images
+    return np.stack(list(embed_ds))
 
 
 def test():
-    """Test baseline image matching model for one-shot learning."""
+    """Test extracted image and speech model embeddings for one-shot learning."""
 
-    # load Flickr 8k one-shot experiment
-    one_shot_exp = flickr_vision.FlickrVision(
-        keywords_split="one_shot_evaluation",
+    # load embeddings from (linear) dense layer of base speech and vision models
+    speech_embed_dir = os.path.join(FLAGS.audio_base_dir, "embed", "dense")
+    image_embed_dir = os.path.join(FLAGS.vision_base_dir, "embed", "dense")
+
+    # load Flickr Audio one-shot experiment
+    one_shot_exp = flickr_multimodal.FlickrMultimodal(
+        features="mfcc", keywords_split="one_shot_evaluation",
         flickr8k_image_dir=os.path.join("data", "external", "flickr8k_images"),
-        preprocess_func=data_preprocess_func)
+        speech_embed_dir=speech_embed_dir, image_embed_dir=image_embed_dir,
+        speech_preprocess_func=data_preprocess_func,
+        image_preprocess_func=data_preprocess_func,
+        speaker_mode=FLAGS.speaker_mode,
+        unseen_match_set=FLAGS.unseen_match_set)
 
     # test model on L-way K-shot task
-    task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
+    task_accuracy, _, conf_interval_95 = experiment.test_multimodal_l_way_k_shot(
         one_shot_exp, FLAGS.K, FLAGS.L, n=FLAGS.N, num_episodes=FLAGS.episodes,
-        k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric,
-        random=FLAGS.random)
+        k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric)
 
     logging.log(
         logging.INFO,

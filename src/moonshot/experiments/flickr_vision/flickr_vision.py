@@ -30,7 +30,8 @@ class FlickrVision(base.Experiment):
 
     def __init__(self, keywords_split="one_shot_evaluation",
                  flickr8k_image_dir=None, flickr30k_image_dir=None,
-                 mscoco_image_dir=None, embed_dir=None, **kwargs):
+                 mscoco_image_dir=None, embed_dir=None, preprocess_func=None,
+                 **kwargs):
         """TODO
 
         `keywords_split` one of `['one_shot_evaluation', 'one_shot_development',
@@ -114,13 +115,13 @@ class FlickrVision(base.Experiment):
 
         # get lookup for unique image indices per keyword class
         self.class_unique_indices = {}
-        for keyword_cls in self.keywords:
-            cls_idx = np.where(self.keywords_set[3] == keyword_cls)[0]
+        for keyword in self.keywords:
+            cls_idx = np.where(self.keywords_set[3] == keyword)[0]
             cls_imgs = self.keywords_set[0][cls_idx]
 
             _, unique_image_idx = np.unique(cls_imgs, return_index=True)  # only need first index
 
-            self.class_unique_indices[keyword_cls] = cls_idx[unique_image_idx]
+            self.class_unique_indices[keyword] = cls_idx[unique_image_idx]
 
         # get lookup for valid keyword labels and indices per unique image uid
         unique_image_uids, unique_image_paths, unique_image_keywords = [], [], []
@@ -142,6 +143,20 @@ class FlickrVision(base.Experiment):
         self.unique_image_uids = unique_image_uids
         self.unique_image_paths = unique_image_paths
         self.unique_image_keywords = unique_image_keywords
+
+        # set image data as raw paths or extracted embedding paths
+        if self.embed_paths is None:
+            self.image_data = self.image_paths
+        else:
+            self.image_data = self.embed_paths
+
+        # preprocess image data paths if specified
+        if preprocess_func is not None:
+            self.image_data = preprocess_func(self.image_data)
+
+    @property
+    def data(self):
+        return self.image_data
 
     def _sample_episode(self, L, K, N, episode_labels=None):
 
@@ -167,27 +182,20 @@ class FlickrVision(base.Experiment):
             x_test_idx.extend(rand_cls_idx)
             y_test.append(ep_label)
 
-        self.curr_episode_train = np.asarray(x_train_idx), np.asarray(y_train)
-        self.curr_episode_test = np.asarray(x_test_idx), np.asarray(y_test)
+        curr_episode_train = np.asarray(x_train_idx), np.asarray(y_train)
+        self.curr_episode_train = curr_episode_train
+
+        curr_episode_test = np.asarray(x_test_idx), np.asarray(y_test)
+        self.curr_episode_test = curr_episode_test
+
+        return curr_episode_train, curr_episode_test
 
     @property
     def _learning_samples(self):
-        if self.embed_paths is None:
-            return (
-                self.image_paths[self.curr_episode_train[0]],
-                self.curr_episode_train[1])
-        else:
-            return (
-                self.embed_paths[self.curr_episode_train[0]],
-                self.curr_episode_train[1])
+        return (
+            self.data[self.curr_episode_train[0]], self.curr_episode_train[1])
 
     @property
     def _evaluation_samples(self):
-        if self.embed_paths is None:
-            return (
-                self.image_paths[self.curr_episode_test[0]],
-                self.curr_episode_test[1])
-        else:
-            return (
-                self.embed_paths[self.curr_episode_test[0]],
-                self.curr_episode_test[1])
+        return (
+            self.data[self.curr_episode_test[0]], self.curr_episode_test[1])

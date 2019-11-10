@@ -21,6 +21,7 @@ import tensorflow as tf
 from moonshot.baselines import fast_dtw
 from moonshot.experiments.flickr_speech import flickr_speech
 from moonshot.experiments.flickr_vision import flickr_vision
+from moonshot.experiments.flickr_multimodal import flickr_multimodal
 
 
 def augment_square_crop(image, size=224, random_scales=None,
@@ -212,6 +213,31 @@ def create_flickr_audio_train_data(features, embed_dir=None,
     flickr_dev_exp = flickr_speech.FlickrSpeech(
         features=features, keywords_split="background_dev", embed_dir=embed_dir,
         speaker_mode=speaker_mode)
+
+    return flickr_train_exp, flickr_dev_exp
+
+
+def create_flickr_multimodal_train_data(
+        features, speech_embed_dir=None, image_embed_dir=None,
+        speech_preprocess_func=None, image_preprocess_func=None,
+        speaker_mode="baseline", unseen_match_set=False):
+    """Load train and validation paired Flickr 8k and Flickr Audio data."""
+
+    flickr_train_exp = flickr_multimodal.FlickrMultimodal(
+        features=features, keywords_split="background_train",
+        flickr8k_image_dir=os.path.join("data", "external", "flickr8k_images"),
+        speech_embed_dir=speech_embed_dir, image_embed_dir=image_embed_dir,
+        speech_preprocess_func=speech_preprocess_func,
+        image_preprocess_func=image_preprocess_func,
+        speaker_mode=speaker_mode, unseen_match_set=unseen_match_set)
+
+    flickr_dev_exp = flickr_multimodal.FlickrMultimodal(
+        features=features, keywords_split="background_dev",
+        flickr8k_image_dir=os.path.join("data", "external", "flickr8k_images"),
+        speech_embed_dir=speech_embed_dir, image_embed_dir=image_embed_dir,
+        speech_preprocess_func=speech_preprocess_func,
+        image_preprocess_func=image_preprocess_func,
+        speaker_mode=speaker_mode, unseen_match_set=unseen_match_set)
 
     return flickr_train_exp, flickr_dev_exp
 

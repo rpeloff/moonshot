@@ -75,6 +75,10 @@ class Experiment(abc.ABC):
         # train across tasks e.g. `for task in batch: train, test = task`
         return tuple(self.batch_generator(batch_size, *args, **kwargs))
 
+    @abc.abstractproperty
+    def data(self):
+        """TODO"""
+
     @property
     def learning_samples(self):
         """Return the task learning samples for the current episode."""

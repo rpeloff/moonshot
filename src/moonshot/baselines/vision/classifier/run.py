@@ -228,7 +228,7 @@ def create_embedding_model(model_options, vision_network):
 
     embedding_network = tf.keras.Model(inputs=model_input, outputs=model_output)
 
-    embedding_model = base.FewShotModel(
+    embedding_model = base.BaseModel(
         embedding_network, None, mc_dropout=FLAGS.mc_dropout)
 
     return embedding_model
@@ -262,7 +262,7 @@ def create_fine_tune_model(model_options, vision_network, num_classes):
     fine_tune_loss = tf.keras.losses.SparseCategoricalCrossentropy(
         from_logits=True)
 
-    few_shot_model = base.FewShotModel(
+    few_shot_model = base.BaseModel(
         fine_tune_network, fine_tune_loss, mc_dropout=FLAGS.mc_dropout)
 
     return few_shot_model
@@ -399,11 +399,21 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
     vision_network.compile(optimizer=optimizer, loss=multi_label_loss)
 
     # create few-shot model from vision network for background training
-    vision_few_shot_model = base.FewShotModel(vision_network, multi_label_loss)
+    vision_few_shot_model = base.BaseModel(vision_network, multi_label_loss)
 
     # test model on one-shot validation task prior to training
     if model_options["one_shot_validation"]:
-        data_preprocess_func = get_data_preprocess_func(model_options)
+
+        one_shot_dev_exp = flickr_vision.FlickrVision(
+            keywords_split="background_dev",
+            flickr8k_image_dir=os.path.join(
+                "data", "external", "flickr8k_images"),
+            flickr30k_image_dir=os.path.join(
+                "data", "external", "flickr30k_images"),
+            mscoco_image_dir=os.path.join(
+                "data", "external", "mscoco", "val2017"),
+            preprocess_func=get_data_preprocess_func(model_options))
+
         embedding_model_func = lambda vision_network: create_embedding_model(
             model_options, vision_network)
 
@@ -417,14 +427,14 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
             test_few_shot_model = create_fine_tune_model(
                 model_options, vision_few_shot_model.model, num_classes=FLAGS.L)
         else:
-            test_few_shot_model = base.FewShotModel(
+            test_few_shot_model = base.BaseModel(
                 vision_few_shot_model.model, None, mc_dropout=FLAGS.mc_dropout)
 
         val_task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
-            dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N, num_episodes=FLAGS.episodes,
-            k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric,
-            classification=classification, model=test_few_shot_model,
-            data_preprocess_func=data_preprocess_func,
+            one_shot_dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N,
+            num_episodes=FLAGS.episodes, k_neighbours=FLAGS.k_neighbours,
+            metric=FLAGS.metric, classification=classification,
+            model=test_few_shot_model,
             embedding_model_func=embedding_model_func,
             fine_tune_steps=FLAGS.fine_tune_steps,
             fine_tune_lr=FLAGS.fine_tune_lr)
@@ -517,16 +527,15 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
                     model_options, vision_few_shot_model.model,
                     num_classes=FLAGS.L)
             else:
-                test_few_shot_model = base.FewShotModel(
+                test_few_shot_model = base.BaseModel(
                     vision_few_shot_model.model, None,
                     mc_dropout=FLAGS.mc_dropout)
 
             val_task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
-                dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N,
+                one_shot_dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N,
                 num_episodes=FLAGS.episodes, k_neighbours=FLAGS.k_neighbours,
                 metric=FLAGS.metric, classification=classification,
                 model=test_few_shot_model,
-                data_preprocess_func=data_preprocess_func,
                 embedding_model_func=embedding_model_func,
                 fine_tune_steps=FLAGS.fine_tune_steps,
                 fine_tune_lr=FLAGS.fine_tune_lr)
@@ -699,7 +708,7 @@ def test(model_options, output_dir, model_file, model_step_file):
     one_shot_exp = flickr_vision.FlickrVision(
         keywords_split="one_shot_evaluation",
         flickr8k_image_dir=os.path.join("data", "external", "flickr8k_images"),
-        embed_dir=None)
+        preprocess_func=get_data_preprocess_func(model_options))
 
     # load model
     vision_network, _ = model_utils.load_model(
@@ -707,7 +716,6 @@ def test(model_options, output_dir, model_file, model_step_file):
         model_step_file=os.path.join(output_dir, model_step_file),
         loss=get_training_objective(model_options))
 
-    data_preprocess_func = get_data_preprocess_func(model_options)
     embedding_model_func = lambda vision_network: create_embedding_model(
         model_options, vision_network)
 
@@ -716,7 +724,7 @@ def test(model_options, output_dir, model_file, model_step_file):
         test_few_shot_model = create_fine_tune_model(
             model_options, vision_network, num_classes=FLAGS.L)
     else:
-        test_few_shot_model = base.FewShotModel(
+        test_few_shot_model = base.BaseModel(
             vision_network, None, mc_dropout=FLAGS.mc_dropout)
 
     classification = False
@@ -732,7 +740,6 @@ def test(model_options, output_dir, model_file, model_step_file):
         one_shot_exp, FLAGS.K, FLAGS.L, n=FLAGS.N, num_episodes=FLAGS.episodes,
         k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric,
         classification=classification, model=test_few_shot_model,
-        data_preprocess_func=data_preprocess_func,
         embedding_model_func=embedding_model_func,
         fine_tune_steps=FLAGS.fine_tune_steps, fine_tune_lr=FLAGS.fine_tune_lr)
 

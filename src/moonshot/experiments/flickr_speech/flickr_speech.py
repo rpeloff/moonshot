@@ -85,7 +85,8 @@ train_features_var["fbank"] = np.array([
 class FlickrSpeech(base.Experiment):
 
     def __init__(self, features="mfcc", keywords_split="one_shot_evaluation",
-                 embed_dir=None, speaker_mode="baseline", **kwargs):
+                 embed_dir=None, preprocess_func=None, speaker_mode="baseline",
+                 **kwargs):
         """TODO
 
         `features` one of `["mfcc", "fbank"]`.
@@ -181,7 +182,7 @@ class FlickrSpeech(base.Experiment):
             speaker_labels = []
             for keyword, count in zip(unique_keywords, counts):
                 if count > 5:  # constrain min. training samples per keyword
-                    speaker_labels.append(self.keyword_labels[keyword])
+                    speaker_labels.append(keyword)
 
             if len(speaker_labels) < 10:  # constrain min. keywords per speaker
                 continue
@@ -193,17 +194,28 @@ class FlickrSpeech(base.Experiment):
         # get lookup for unique indices per class label
         self.class_unique_indices = {}
         for keyword in self.keywords:
-            label = self.keyword_labels[keyword]
             cls_idx = np.where(self.keywords_set[3] == keyword)[0]
 
-            self.class_unique_indices[label] = cls_idx
+            self.class_unique_indices[keyword] = cls_idx
+
+        # set speech data as raw paths or extracted embedding paths
+        if self.embed_paths is None:
+            self.speech_data = self.audio_paths
+        else:
+            self.speech_data = self.embed_paths
+
+        if preprocess_func is not None:
+            self.speech_data = preprocess_func(self.speech_data)
+
+    @property
+    def data(self):
+        return self.speech_data
 
     def _sample_episode(self, L, K, N, episode_labels=None):
 
         # sample episode learning task (defined by L-way classes)
         if episode_labels is None:
-            episode_labels = self.rng.choice(
-                len(self.keywords), L, replace=False)
+            episode_labels = self.rng.choice(self.keywords, L, replace=False)
 
         if self.speaker_mode == "distractor":
             # choose a random speaker & label (from valid set) for evaluation
@@ -272,27 +284,20 @@ class FlickrSpeech(base.Experiment):
                 valid_class_indices, 1, replace=False)
             x_test_idx.extend(rand_cls_idx)
 
-        self.curr_episode_train = np.asarray(x_train_idx), np.asarray(y_train)
-        self.curr_episode_test = np.asarray(x_test_idx), np.asarray(y_test)
+        curr_episode_train = np.asarray(x_train_idx), np.asarray(y_train)
+        self.curr_episode_train = curr_episode_train
+
+        curr_episode_test = np.asarray(x_test_idx), np.asarray(y_test)
+        self.curr_episode_test = curr_episode_test
+
+        return curr_episode_train, curr_episode_test
 
     @property
     def _learning_samples(self):
-        if self.embed_paths is None:
-            return (
-                self.audio_paths[self.curr_episode_train[0]],
-                self.curr_episode_train[1])
-        else:
-            return (
-                self.embed_paths[self.curr_episode_train[0]],
-                self.curr_episode_train[1])
+        return (
+            self.data[self.curr_episode_train[0]], self.curr_episode_train[1])
 
     @property
     def _evaluation_samples(self):
-        if self.embed_paths is None:
-            return (
-                self.audio_paths[self.curr_episode_test[0]],
-                self.curr_episode_test[1])
-        else:
-            return (
-                self.embed_paths[self.curr_episode_test[0]],
-                self.curr_episode_test[1])
+        return (
+            self.data[self.curr_episode_test[0]], self.curr_episode_test[1])

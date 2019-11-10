@@ -24,6 +24,7 @@ from scipy.spatial.distance import cdist
 
 
 from moonshot.baselines import fast_dtw
+from moonshot.baselines import model_utils
 
 
 FLAGS = flags.FLAGS
@@ -105,15 +106,15 @@ def gradient_descent_optimizer(lr, apply_updates_func=None):
     return optimizer
 
 
-class FewShotModel:
-    """Few-shot model class with functions for model training and prediction."""
+class BaseModel:
+    """Base model with functions for network training and inference."""
 
-    def __init__(self, model, loss, mc_dropout=False, stochastic_steps=100):
-        self.model = model
+    def __init__(self, base_network, loss, mc_dropout=False, stochastic_steps=100):
+        self.model = base_network
         self.loss = loss
-
         self.mc_dropout = mc_dropout
         self.stochastic_steps = stochastic_steps
+
         self._predictive_variance = None
 
     def predict(self, inputs, training=False):
@@ -124,7 +125,7 @@ class FewShotModel:
 
             mc_prediction = []
             for _ in range(self.stochastic_steps):
-                mc_prediction.append(self.model(inputs, training=True))
+                mc_prediction.append(self.model.predict(inputs, training=True))
             mc_prediction = tf.convert_to_tensor(mc_prediction)
 
             predictive_mean, self._predictive_variance = tf.nn.moments(
@@ -223,6 +224,287 @@ class FewShotModel:
     @weights.setter
     def weights(self, weights):
         self.model.set_weights(weights)
+
+
+class WeaklySupervisedModel:
+    """Weakly supervised model with two branches for learning from co-occuring paired inputs."""
+
+    def __init__(self, speech_network, vision_network, loss, mc_dropout=False,
+                 stochastic_steps=100):
+
+        self.speech_model = BaseModel(
+            speech_network, None, mc_dropout=mc_dropout,
+            stochastic_steps=stochastic_steps)
+
+        self.vision_model = BaseModel(
+            vision_network, None, mc_dropout=mc_dropout,
+            stochastic_steps=stochastic_steps)
+
+        self.loss = loss
+
+    # @tf.function(experimental_relax_shapes=True)
+    def train_step(self, x_speech, x_image, optimizer, training=True,
+                   stop_gradients=False, clip_norm=None):
+        """Train model for one gradient step on data.
+
+        `optimizer` should be one of the tf.keras.optimizers (e.g. Adam) or
+        a callable that takes arguments (model, gradients).
+
+        Set `training=False` to update parameters in inference mode. Useful
+        when fine-tuning weights using moving statistics learned during training
+        or MC Dropout (i.e. model averaging) predictions in the objective.
+
+        Set `stop_gradients=True` to prevent gradients from backpropagating
+        through the training step gradients. Useful when this is being computed
+        as part of an inner-optimization of a meta-objective and we would like
+        to use a first order approximation (i.e. ommitting second derivatives).
+        """
+
+        with tf.GradientTape() as train_tape:
+            # watch vars in case of tf.Tensor's which are not tracked by default
+            train_tape.watch(self.speech_model.model.trainable_variables)
+            train_tape.watch(self.vision_model.model.trainable_variables)
+            # compute transformations for `x_speech` and `x_image` and evaluate objective
+            y_speech = self.speech_model.predict(x_speech, training=training)
+            y_image = self.vision_model.predict(x_image, training=training)
+            loss_value = self.loss(y_speech, y_image)
+
+        network_s_variables = self.speech_model.model.trainable_variables
+        network_i_variables = self.vision_model.model.trainable_variables
+
+        train_gradients_s, train_gradients_i = train_tape.gradient(
+            loss_value, [network_s_variables, network_i_variables])
+
+        if "debug" in FLAGS and FLAGS.debug:  # TODO: flatten grads first
+            for grad in train_gradients_s + train_gradients_i:
+                if tf.math.count_nonzero(tf.math.is_nan(grad)) >= 1:
+                    tf.print("NaN grad encountered:", grad)
+                    tf.print("Loss:", loss_value)
+                    tf.print("Speech network output:", y_speech)
+                    tf.print("Image network output:", y_image)
+
+        # stop gradients if specified
+        if stop_gradients:
+            train_gradients_s = [
+                tf.stop_gradient(grad) for grad in train_gradients_s]
+            train_gradients_i = [
+                tf.stop_gradient(grad) for grad in train_gradients_i]
+
+        # clip gradients by global norm if specified
+        if clip_norm is not None:
+            train_gradients_s, global_norm = tf.clip_by_global_norm(
+                train_gradients_s, clip_norm)
+
+            train_gradients_i, global_norm = tf.clip_by_global_norm(
+                train_gradients_i, clip_norm)
+
+            # debugging in eager mode
+            if "debug" in FLAGS and FLAGS.debug and global_norm > clip_norm:
+                tf.print(
+                    "Clipping gradients with global norm", global_norm, "to",
+                    "clip norm", clip_norm)
+
+        if isinstance(optimizer, tf.keras.optimizers.Optimizer):
+            optimizer.apply_gradients(
+                zip(train_gradients_s + train_gradients_i,
+                    network_s_variables + network_i_variables))
+
+        elif callable(optimizer):
+            optimizer(self.speech_model.model, self.vision_model.model,
+                      train_gradients_s, train_gradients_i)
+
+        else:
+            raise ValueError(
+                "Argument `optimizer_a` should be a tf.keras optimizer or a "
+                "callable that takes arguments "
+                "(network_a, network_b, gradients_a, gradients_b).")
+
+        return loss_value, y_speech, y_image
+
+    @tf.function(experimental_relax_shapes=True)
+    def train_steps(self, x_speech, x_image, num_steps, **train_step_kwargs):
+        """Train model for `num_steps` gradient steps (see `train_step`)."""
+        for _ in range(num_steps):
+            loss_value, y_speech, y_image = self.train_step(
+                x_speech, x_image, **train_step_kwargs)
+
+        return loss_value, y_speech, y_image
+
+
+def multimodal_gradient_descent_optimizer(
+        lr, speech_weights_structure, vision_weights_structure):
+    """Create an optimizer that applies the basic gradient descent algorithm.
+
+    `lr` is the gradient descent learning rate hyperparameter.
+    """
+
+    def optimizer(speech_network, vision_network, speech_gradients, vision_gradients):
+        """Apply gradient descent to model weights with corresponding grads."""
+        speech_weight_updates = tf.nest.map_structure(
+            lambda grad, var: (var - lr*grad), speech_gradients,
+            speech_network.trainable_variables)
+
+        vision_weight_updates = tf.nest.map_structure(
+            lambda grad, var: (var - lr*grad), vision_gradients,
+            vision_network.trainable_variables)
+
+        model_utils.update_model_weights(
+            speech_network, speech_weight_updates, speech_weights_structure)
+
+        model_utils.update_model_weights(
+            vision_network, vision_weight_updates, vision_weights_structure)
+
+    return optimizer
+
+
+class WeaklySupervisedMAML(WeaklySupervisedModel):
+
+    def __init__(self, speech_network, vision_network, loss,
+                 inner_optimizer_lr=1e-2, mc_dropout=False, stochastic_steps=100):
+        super().__init__(
+            speech_network, vision_network, loss, mc_dropout=mc_dropout,
+            stochastic_steps=stochastic_steps)
+
+        speech_network_clone = tf.keras.models.clone_model(speech_network)
+        vision_network_clone = tf.keras.models.clone_model(vision_network)
+
+        self.adapt_model = WeaklySupervisedModel(
+            speech_network_clone, vision_network_clone, loss,
+            mc_dropout=mc_dropout, stochastic_steps=stochastic_steps)
+
+        self.speech_weights_structure = model_utils.get_model_weights_structure(
+            speech_network)
+        self.vision_weights_structure = model_utils.get_model_weights_structure(
+            vision_network)
+
+        self.inner_optimizer = multimodal_gradient_descent_optimizer(
+            inner_optimizer_lr, self.speech_weights_structure,
+            self.vision_weights_structure)
+
+
+    # make our MAML fast with tf.function autograph!
+    @tf.function(experimental_relax_shapes=True)
+    def maml_train_step(
+            self, x_speech_train, x_image_train, x_speech_test, x_image_test,
+            num_steps, meta_optimizer, training=True,
+            stop_gradients=False, clip_norm=None):
+
+        meta_batch_size = tf.shape(x_speech_train)[0]
+
+        with tf.GradientTape() as meta_tape:
+
+            # watch vars in case of tf.Tensor's which are not tracked by default
+            meta_tape.watch(self.speech_model.model.trainable_variables)
+            meta_tape.watch(self.vision_model.model.trainable_variables)
+
+            # use tf.TensorArray to accumulate results in dynamically unrolled loop
+            inner_losses = tf.TensorArray(tf.float32, size=meta_batch_size)
+            meta_losses = tf.TensorArray(tf.float32, size=meta_batch_size)
+
+            # train and evaluate meta-objective on each task in the batch
+            for batch_index in tf.range(meta_batch_size):
+                x_s_1 = x_speech_train[batch_index]
+                x_i_1 = x_image_train[batch_index]
+                x_s_2 = x_speech_test[batch_index]
+                x_i_2 = x_image_test[batch_index]
+
+                # accumulate train and test losses per update for each task
+                train_losses = tf.TensorArray(tf.float32, size=num_steps)
+                test_losses = tf.TensorArray(tf.float32, size=num_steps)
+
+                # initial "weight update" with current model weights
+                speech_weight_updates = self.speech_model.model.trainable_weights
+                vision_weight_updates = self.vision_model.model.trainable_weights
+
+                # # create a model copy starting with the exact weight variables from
+                # # the base model so we can update the model on the current task and
+                # # then take gradients w.r.t. the base weights on the meta-objective
+                # # NOTE: not using variable assign which has no grad ... solutions?
+                # self.adapt_model.speech_model.model = self.clone_speech_network_func(
+                #     self.speech_model.model)
+
+                # self.adapt_model.vision_model.model = self.clone_vision_network_func(
+                #     self.vision_model.model)
+
+                for update_step in tf.range(num_steps):
+                    # make sure model has previous updates (python state issue .. ?)
+                    model_utils.update_model_weights(
+                        self.adapt_model.speech_model.model,
+                        speech_weight_updates, self.speech_weights_structure)
+
+                    model_utils.update_model_weights(
+                        self.adapt_model.vision_model.model,
+                        vision_weight_updates, self.vision_weights_structure)
+
+                    # update model on task training samples
+                    inner_task_loss, y_s_1, y_i_1 = self.adapt_model.train_step(
+                        x_s_1, x_i_1, optimizer=self.inner_optimizer,
+                        training=training, stop_gradients=stop_gradients,
+                        clip_norm=clip_norm)
+
+                    # compute transformations for `x_speech` and `x_image` and
+                    # evaluate meta-objective of updated model on task test samples
+                    y_s_2 = self.adapt_model.speech_model.predict(x_s_2, training=training)
+                    y_i_2 = self.adapt_model.vision_model.predict(x_i_2, training=training)
+                    meta_task_loss = self.loss(y_s_2, y_i_2)
+
+                    train_losses = train_losses.write(update_step, inner_task_loss)
+                    test_losses = test_losses.write(update_step, meta_task_loss)
+
+                inner_losses = inner_losses.write(batch_index, train_losses.stack())
+                meta_losses = meta_losses.write(batch_index, test_losses.stack())
+
+            # get stacked tensors from the array
+            inner_losses = inner_losses.stack()
+            meta_losses = meta_losses.stack()
+
+            # average across task meta-objectives (at the final updates)
+            meta_loss = tf.reduce_mean(tf.stack(meta_losses)[:, -1])
+
+        # compute gradient of meta-objective and update MAML model
+        network_s_variables = self.speech_model.model.trainable_variables
+        network_i_variables = self.vision_model.model.trainable_variables
+
+        meta_gradients_s, meta_gradients_i = meta_tape.gradient(
+            meta_loss, [network_s_variables, network_i_variables])
+
+        if "debug" in FLAGS and FLAGS.debug:
+            for grad in meta_gradients_s + meta_gradients_i:
+                if tf.math.count_nonzero(tf.math.is_nan(grad)) >= 1:
+                    tf.print("NaN grad encountered:", grad)
+                    tf.print("Loss:", meta_loss)
+
+        # clip gradients by global norm if specified
+        if clip_norm is not None:
+            meta_gradients_s, global_norm = tf.clip_by_global_norm(
+                meta_gradients_s, clip_norm)
+
+            meta_gradients_i, global_norm = tf.clip_by_global_norm(
+                meta_gradients_i, clip_norm)
+
+            # debugging in eager mode
+            if "debug" in FLAGS and FLAGS.debug and global_norm > clip_norm:
+                tf.print(
+                    "Clipping gradients with global norm", global_norm, "to",
+                    "clip norm", clip_norm)
+
+        if isinstance(meta_optimizer, tf.keras.optimizers.Optimizer):
+            meta_optimizer.apply_gradients(
+                zip(meta_gradients_s + meta_gradients_i,
+                    network_s_variables + network_i_variables))
+
+        elif callable(meta_optimizer):
+            meta_optimizer(self.speech_model.model, self.vision_model.model,
+                           meta_gradients_s, meta_gradients_i)
+
+        else:
+            raise ValueError(
+                "Argument `meta_optimizer` should be a tf.keras optimizer or a "
+                "callable that takes arguments "
+                "(network_a, network_b, gradients_a, gradients_b).")
+
+        return meta_loss, inner_losses, meta_losses
+
 
 
 # class Model(abc.ABC):

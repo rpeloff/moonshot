@@ -208,7 +208,7 @@ def create_embedding_model(model_options, speech_network):
 
     embedding_network = tf.keras.Model(inputs=model_input, outputs=model_output)
 
-    embedding_model = base.FewShotModel(
+    embedding_model = base.BaseModel(
         embedding_network, None, mc_dropout=FLAGS.mc_dropout)
 
     return embedding_model
@@ -242,7 +242,7 @@ def create_fine_tune_model(model_options, speech_network, num_classes):
     fine_tune_loss = tf.keras.losses.SparseCategoricalCrossentropy(
         from_logits=True)
 
-    few_shot_model = base.FewShotModel(
+    few_shot_model = base.BaseModel(
         fine_tune_network, fine_tune_loss, mc_dropout=FLAGS.mc_dropout)
 
     return few_shot_model
@@ -385,11 +385,17 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
     speech_network.compile(optimizer=optimizer, loss=loss)
 
     # create few-shot model from speech network for background training
-    speech_few_shot_model = base.FewShotModel(speech_network, loss)
+    speech_few_shot_model = base.BaseModel(speech_network, loss)
 
     # test model on one-shot validation task prior to training
     if model_options["one_shot_validation"]:
-        data_preprocess_func = get_data_preprocess_func(model_options)
+
+        one_shot_dev_exp = flickr_speech.FlickrSpeech(
+            features=model_options["features"],
+            keywords_split="background_dev",
+            preprocess_func=get_data_preprocess_func(model_options),
+            speaker_mode=FLAGS.speaker_mode)
+
         embedding_model_func = lambda speech_network: create_embedding_model(
             model_options, speech_network)
 
@@ -403,14 +409,14 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
             test_few_shot_model = create_fine_tune_model(
                 model_options, speech_few_shot_model.model, num_classes=FLAGS.L)
         else:
-            test_few_shot_model = base.FewShotModel(
+            test_few_shot_model = base.BaseModel(
                 speech_few_shot_model.model, None, mc_dropout=FLAGS.mc_dropout)
 
         val_task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
-            dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N, num_episodes=FLAGS.episodes,
-            k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric,
-            classification=classification, model=test_few_shot_model,
-            data_preprocess_func=data_preprocess_func,
+            one_shot_dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N,
+            num_episodes=FLAGS.episodes, k_neighbours=FLAGS.k_neighbours,
+            metric=FLAGS.metric, classification=classification,
+            model=test_few_shot_model,
             embedding_model_func=embedding_model_func,
             fine_tune_steps=FLAGS.fine_tune_steps,
             fine_tune_lr=FLAGS.fine_tune_lr)
@@ -488,16 +494,15 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
                     model_options, speech_few_shot_model.model,
                     num_classes=FLAGS.L)
             else:
-                test_few_shot_model = base.FewShotModel(
+                test_few_shot_model = base.BaseModel(
                     speech_few_shot_model.model, None,
                     mc_dropout=FLAGS.mc_dropout)
 
             val_task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
-                dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N,
+                one_shot_dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N,
                 num_episodes=FLAGS.episodes, k_neighbours=FLAGS.k_neighbours,
                 metric=FLAGS.metric, classification=classification,
                 model=test_few_shot_model,
-                data_preprocess_func=data_preprocess_func,
                 embedding_model_func=embedding_model_func,
                 fine_tune_steps=FLAGS.fine_tune_steps,
                 fine_tune_lr=FLAGS.fine_tune_lr)
@@ -640,7 +645,8 @@ def test(model_options, output_dir, model_file, model_step_file):
     # load Flickr Audio one-shot experiment
     one_shot_exp = flickr_speech.FlickrSpeech(
         features=model_options["features"],
-        keywords_split="one_shot_evaluation", embed_dir=None,
+        keywords_split="one_shot_evaluation",
+        preprocess_func=get_data_preprocess_func(model_options),
         speaker_mode=FLAGS.speaker_mode)
 
     # load model
@@ -649,7 +655,6 @@ def test(model_options, output_dir, model_file, model_step_file):
         model_step_file=os.path.join(output_dir, model_step_file),
         loss=get_training_objective(model_options))
 
-    data_preprocess_func = get_data_preprocess_func(model_options)
     embedding_model_func = lambda speech_network: create_embedding_model(
         model_options, speech_network)
 
@@ -658,7 +663,7 @@ def test(model_options, output_dir, model_file, model_step_file):
         test_few_shot_model = create_fine_tune_model(
             model_options, speech_network, num_classes=FLAGS.L)
     else:
-        test_few_shot_model = base.FewShotModel(
+        test_few_shot_model = base.BaseModel(
             speech_network, None, mc_dropout=FLAGS.mc_dropout)
 
     classification = False
@@ -674,7 +679,6 @@ def test(model_options, output_dir, model_file, model_step_file):
         one_shot_exp, FLAGS.K, FLAGS.L, n=FLAGS.N, num_episodes=FLAGS.episodes,
         k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric,
         classification=classification, model=test_few_shot_model,
-        data_preprocess_func=data_preprocess_func,
         embedding_model_func=embedding_model_func,
         fine_tune_steps=FLAGS.fine_tune_steps, fine_tune_lr=FLAGS.fine_tune_lr)
 

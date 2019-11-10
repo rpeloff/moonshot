@@ -187,12 +187,12 @@ def create_and_copy_model(model, create_model_func, **kwargs):
 
     update_model_weights(  # copy trainable weights
         new_model, model.trainable_weights,
-        weights_structure=get_model_weights_structure(model, trainable=True),
+        weights_structure=get_model_weights_structure(new_model, trainable=True),
         trainable=True, force_update=True)
 
     update_model_weights(  # copy non-trainable weights
         new_model, model.non_trainable_weights,
-        weights_structure=get_model_weights_structure(model, trainable=False),
+        weights_structure=get_model_weights_structure(new_model, trainable=False),
         trainable=False, force_update=True)
 
     # make sure that model is "built" and new variables are not created

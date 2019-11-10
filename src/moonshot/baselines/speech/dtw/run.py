@@ -1,4 +1,4 @@
-"""Test simple speech dynamic time warping baseline on Flickr one-shot speech task.
+"""Test dynamic time warping baseline on Flickr one-shot speech task.
 
 Author: Ryan Eloff
 Contact: ryan.peter.eloff@gmail.com
@@ -46,8 +46,6 @@ flags.DEFINE_string("metric", "cosine", "distance metric to use for nearest neig
 flags.DEFINE_boolean("random", False, "random action baseline")
 flags.DEFINE_enum("speaker_mode", "baseline", ["baseline", "difficult", "distractor"],
                   "type of speakers selected in a task episode")
-
-# model testing options
 flags.DEFINE_integer("seed", 42, "that magic number")
 
 # speech features
@@ -65,7 +63,7 @@ flags.DEFINE_bool("debug", False, "log with debug verbosity level")
 
 
 def data_preprocess_func(speech_paths):
-    """Data batch preprocessing function for input to the speech network.
+    """Data batch preprocessing function for input to the baseline model.
 
     Takes a batch of file paths, loads the speech features and preprocesses the
     features.
@@ -88,14 +86,15 @@ def test():
     # load Flickr Audio one-shot experiment
     one_shot_exp = flickr_speech.FlickrSpeech(
         features=FLAGS.features,
-        keywords_split="one_shot_evaluation", embed_dir=None,
+        keywords_split="one_shot_evaluation",
+        preprocess_func=data_preprocess_func,
         speaker_mode=FLAGS.speaker_mode)
 
     # test model on L-way K-shot task
     task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
         one_shot_exp, FLAGS.K, FLAGS.L, n=FLAGS.N, num_episodes=FLAGS.episodes,
         k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric, dtw=True,
-        random=FLAGS.random, data_preprocess_func=data_preprocess_func)
+        random=FLAGS.random)
 
     logging.log(
         logging.INFO,

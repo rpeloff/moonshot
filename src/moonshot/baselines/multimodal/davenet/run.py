@@ -1,4 +1,4 @@
-"""Train spoken word similarity network and test on Flickr-Audio one-shot speech task.
+"""Train deep audio-visual similarity network (DAVEnet) and test on Flickr one-shot multimodal task.
 
 Author: Ryan Eloff
 Contact: ryan.peter.eloff@gmail.com
@@ -13,7 +13,6 @@ from __future__ import print_function
 
 import datetime
 import os
-import time
 
 
 from absl import app
@@ -21,7 +20,6 @@ from absl import flags
 from absl import logging
 
 
-import pandas as pd
 import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
@@ -33,7 +31,7 @@ from moonshot.baselines import experiment
 from moonshot.baselines import losses
 from moonshot.baselines import model_utils
 
-from moonshot.experiments.flickr_speech import flickr_speech
+from moonshot.experiments.flickr_multimodal import flickr_multimodal
 
 from moonshot.utils import file_io
 from moonshot.utils import logging as logging_utils
@@ -47,15 +45,12 @@ DEFAULT_OPTIONS = {
     # training data
     "one_shot_validation": True,
     # data pipeline
-    "batch_size": 64*8,  # used if "balanced": False
-    "balanced": True,
-    "p": 64,
-    "k": 8,
+    "batch_size": 512,
     "num_batches": 2500,
-    # siamese model
-    "dense_units": [1024],  # hidden layers on top of base network (last layer is linear)
+    # audio-visual model (layers on top of base networks; final layers linear)
+    "dense_units": [1024], #[2048, 2048, 2048, 1024],
     "dropout_rate": 0.2,
-    # triplet objective
+    # triplet imposter objective
     "margin": 1.,
     "metric": "cosine",  # or "euclidean", "cosine",
     # training
@@ -71,20 +66,21 @@ DEFAULT_OPTIONS = {
 
 # one-shot evaluation (and validation) options
 flags.DEFINE_integer("episodes", 400, "number of L-way K-shot learning episodes")
-flags.DEFINE_integer("L", 5, "number of classes to sample in a task episode (L-way)")
+flags.DEFINE_integer("L", 10, "number of classes to sample in a task episode (L-way)")
 flags.DEFINE_integer("K", 1, "number of task learning samples per class (K-shot)")
 flags.DEFINE_integer("N", 15, "number of task evaluation samples")
 flags.DEFINE_integer("k_neighbours", 1, "number of nearest neighbours to consider")
 flags.DEFINE_string("metric", "cosine", "distance metric to use for nearest neighbours matching")
 flags.DEFINE_integer("fine_tune_steps", None, "number of fine-tune gradient steps on one-shot data")
 flags.DEFINE_float("fine_tune_lr", 1e-3, "learning rate for gradient descent fine-tune")
-flags.DEFINE_bool("classification", False, "whether to use softmax predictions as match function"
-                  "(requires fine-tuning of new logits layer)")
 flags.DEFINE_enum("speaker_mode", "baseline", ["baseline", "difficult", "distractor"],
                   "type of speakers selected in a task episode")
+flags.DEFINE_bool("direct_match", True, "directly match speech to images")
+flags.DEFINE_bool("unseen_match_set", False, "match set contains classes unseen in K-shot learning")
 
 # model train/test options
-flags.DEFINE_string("base_dir", None, "directory containing base network model")
+flags.DEFINE_string("vision_base_dir", None, "directory containing base vision network model")
+flags.DEFINE_string("audio_base_dir", None, "directory containing base audio network model")
 flags.DEFINE_bool("l2_norm", True, "L2-normalise embedding predictions (as done in training)")
 flags.DEFINE_bool("load_best", False, "load previous best model for resumed training or testing")
 flags.DEFINE_bool("mc_dropout", False, "make embedding predictions with MC Dropout")
@@ -103,46 +99,40 @@ flags.DEFINE_bool("debug", False, "log with debug verbosity level")
 
 
 def get_training_objective(model_options):
-    """Get training loss for ranking speech similarity with siamese triplets."""
+    """Get training loss for ranking speech-image similarity with siamese triplets."""
 
-    triplet_loss = losses.triplet_semihard_loss(
+    triplet_loss = losses.triplet_imposter_random_sample_loss(
         margin=model_options["margin"], metric=model_options["metric"])
 
     return triplet_loss
 
 
-def get_data_preprocess_func():
-    """Create data batch preprocessing function for input to the speech network.
+def data_preprocess_func(embed_paths):
+    """Data batch preprocessing function for input to the baseline model.
 
-    Returns function `data_preprocess_func` that takes a batch of file paths,
-    loads base model embedding data and preprocesses the data.
+    Takes a batch of file paths, loads image data and preprocesses the images.
     """
+    embed_ds = tf.data.TFRecordDataset(
+        embed_paths, compression_type="ZLIB")
+    # map sequential to prevent optimization overhead
+    preprocess_func = lambda example: dataset.parse_embedding_protobuf(
+        example)["embed"]
+    embed_ds = embed_ds.map(preprocess_func, num_parallel_calls=8)
 
-    # load base model embeddings
-    def data_preprocess_func(embed_paths):
-        embed_ds = tf.data.TFRecordDataset(
-            embed_paths, compression_type="ZLIB", num_parallel_reads=8)
-        # map sequential to prevent optimization overhead
-        embed_ds = embed_ds.map(
-            lambda example: dataset.parse_embedding_protobuf(
-                example)["embed"])
-
-        return np.stack(list(embed_ds))
-
-    return data_preprocess_func
+    return np.stack(list(embed_ds))
 
 
 def create_speech_network(model_options, build_model=True):
-    """Create spoken word similarity network from model options."""
+    """Create spoken word network branch from model options."""
 
     # get input shape
-    input_shape = None
+    input_shape = [None]
     if build_model:
-        input_shape = model_options["input_shape"]
+        input_shape = model_options["audio_input_shape"]
 
     # train dense layers on extracted base embeddings
     if build_model:
-        logging.log(logging.INFO, "Training model on base embeddings")
+        logging.log(logging.INFO, "Training audio branch on base embeddings")
 
     if model_options["dropout_rate"] is not None:
         model_layers = [
@@ -175,24 +165,62 @@ def create_speech_network(model_options, build_model=True):
     return speech_network
 
 
-def create_embedding_model(speech_network):
-    """Create embedding model from spoken word similarity network."""
+def create_vision_network(model_options, build_model=True):
+    """Create vision network branch from model options."""
 
-    # classification on fine-tuned class logits
-    if FLAGS.classification:
-        embedding_network = speech_network
+    # get input shape
+    input_shape = [None]
+    if build_model:
+        input_shape = model_options["vision_input_shape"]
+
+    # train dense layers on extracted base embeddings
+    if build_model:
+        logging.log(logging.INFO, "Training vision branch on base embeddings")
+
+    if model_options["dropout_rate"] is not None:
+        model_layers = [
+            tf.keras.layers.Dropout(
+                model_options["dropout_rate"], input_shape=input_shape),
+            tf.keras.layers.Dense(model_options["dense_units"][0])]
+    else:
+        model_layers = [
+            tf.keras.layers.Dense(
+                model_options["dense_units"][0],
+                input_shape=input_shape)]
+
+    # add top layer hidden units (final layer linear)
+    if model_options["dense_units"] is not None:
+        for dense_units in model_options["dense_units"][1:]:
+
+            model_layers.append(tf.keras.layers.ReLU())
+
+            if model_options["dropout_rate"] is not None:
+                model_layers.append(
+                    tf.keras.layers.Dropout(model_options["dropout_rate"]))
+
+            model_layers.append(tf.keras.layers.Dense(dense_units))
+
+    vision_network = tf.keras.Sequential(model_layers)
+
+    if build_model:
+        vision_network.summary()
+
+    return vision_network
+
+
+def create_embedding_model(base_network):
+    """Create embedding model from vision or speech network branch."""
 
     # l2-normalise network output as done in training of siamese objective
-    elif FLAGS.l2_norm:
+    if FLAGS.l2_norm:
         l2_norm_layer = tf.keras.layers.Lambda(
             lambda x: tf.nn.l2_normalize(x, axis=1))
 
         embedding_network = tf.keras.Model(
-            inputs=speech_network.input,
-            outputs=l2_norm_layer(speech_network.output))
-
+            inputs=base_network.input,
+            outputs=l2_norm_layer(base_network.output))
     else:
-        embedding_network = speech_network
+        embedding_network = base_network
 
     embedding_model = base.BaseModel(
         embedding_network, None, mc_dropout=FLAGS.mc_dropout)
@@ -200,157 +228,102 @@ def create_embedding_model(speech_network):
     return embedding_model
 
 
-def create_fine_tune_model(model_options, speech_network, num_classes):
-    """Create siamese similarity model for fine-tuning on unseen triplets."""
-
-    # create clone of the speech network (so that it remains unchanged)
+def create_fine_tune_model(model_options, speech_network, vision_network):
+    """Create siamese audio-visual similarity model for fine-tuning on unseen triplets."""
+    # TODO
+    # create clone of the vision network (so that it remains unchanged)
     speech_network_clone = model_utils.create_and_copy_model(
         speech_network, create_speech_network, model_options=model_options,
         build_model=True)  # TODO: figure out how to get this working without build (for MAML inner loop)
 
+    vision_network_clone = model_utils.create_and_copy_model(
+        vision_network, create_vision_network, model_options=model_options,
+        build_model=True)  # TODO: figure out how to get this working without build (for MAML inner loop)
+    
     # freeze all model layers for transfer learning (except final dense layer)
     freeze_index = -1
+
+    for layer in vision_network_clone.layers[:freeze_index]:
+        layer.trainable = False
 
     for layer in speech_network_clone.layers[:freeze_index]:
         layer.trainable = False
 
-    # fine-tune speech similarity network on siamese objective
-    if not FLAGS.classification:
-        fine_tune_network = speech_network_clone
+    # use same objective as during training for fine-tuning
+    fine_tune_loss = get_training_objective(model_options)
 
-        # use same objective as during training for fine-tuning
-        fine_tune_loss = get_training_objective(model_options)
-
-    # add a categorical logits layer for fine-tuning on unseen classes
-    else:
-        speech_network_clone.layers[-1].trainable = False
-
-        model_outputs = speech_network_clone.output
-        model_outputs = tf.keras.layers.Dense(num_classes)(model_outputs)
-
-        fine_tune_network = tf.keras.Model(
-            inputs=speech_network_clone.input, outputs=model_outputs)
-
-        # use categorical cross entropy objective to fine-tune logits
-        fine_tune_loss = tf.keras.losses.SparseCategoricalCrossentropy(
-            from_logits=True)
-
-    few_shot_model = base.BaseModel(
-        fine_tune_network, fine_tune_loss, mc_dropout=FLAGS.mc_dropout)
+    few_shot_model = base.WeaklySupervisedModel(
+        speech_network_clone, vision_network_clone, fine_tune_loss,
+        mc_dropout=FLAGS.mc_dropout)
 
     return few_shot_model
 
 
 def train(model_options, output_dir, model_file=None, model_step_file=None,
           tf_writer=None):
-    """Create and train spoken word similarity model for one-shot learning."""
+    """Create and train audio-visual similarity model for one-shot learning."""
 
-    # load embeddings from dense layer of base model
-    embed_dir = os.path.join(model_options["base_dir"], "embed", "dense")
+    # load embeddings from (linear) dense layer of base speech and vision models
+    speech_embed_dir = os.path.join(
+        model_options["audio_base_dir"], "embed", "dense")
 
-    # load training data (embed dir determines if mfcc/fbank)
-    train_exp, dev_exp = dataset.create_flickr_audio_train_data(
-        "mfcc", embed_dir=embed_dir, speaker_mode=FLAGS.speaker_mode)
+    image_embed_dir = os.path.join(
+        model_options["vision_base_dir"], "embed", "dense")
 
-    train_labels = []
-    for keyword in train_exp.keywords_set[3]:
-        label = train_exp.keyword_labels[keyword]
-        train_labels.append(label)
-    train_labels = np.asarray(train_labels)
+    # load training data (embed dir determines mfcc/fbank speech features)
+    train_exp, dev_exp = dataset.create_flickr_multimodal_train_data(
+        "mfcc", speech_embed_dir=speech_embed_dir,
+        image_embed_dir=image_embed_dir, speaker_mode=FLAGS.speaker_mode,
+        unseen_match_set=FLAGS.unseen_match_set)
 
-    dev_labels = []
-    for keyword in dev_exp.keywords_set[3]:
-        label = train_exp.keyword_labels[keyword]
-        dev_labels.append(label)
-    dev_labels = np.asarray(dev_labels)
+    train_speech_paths = train_exp.speech_experiment.data
+    train_image_paths = train_exp.vision_experiment.data
 
-    train_paths = train_exp.embed_paths
-    dev_paths = dev_exp.embed_paths
+    dev_speech_paths = dev_exp.speech_experiment.data
+    dev_image_paths = dev_exp.vision_experiment.data
 
     # define preprocessing for base model embeddings
     preprocess_data_func = lambda example: dataset.parse_embedding_protobuf(
         example)["embed"]
 
-    # create balanced batch training dataset pipeline
-    if model_options["balanced"]:
-        assert model_options["p"] is not None
-        assert model_options["k"] is not None
-
-        shuffle_train = False
-        prefetch_train = False
-        num_repeat = model_options["num_batches"]
-        model_options["batch_size"] = model_options["p"] * model_options["k"]
-
-        # get unique path train indices per unique label
-        train_labels_series = pd.Series(train_labels)
-        train_label_idx = {
-            label: idx.values[
-                np.unique(train_paths[idx.values], return_index=True)[1]]
-            for label, idx in train_labels_series.groupby(
-                train_labels_series).groups.items()}
-
-        # cache paths to speed things up a little ...
-        file_io.check_create_dir(os.path.join(output_dir, "cache"))
-
-        # create a dataset for each unique keyword label (shuffled and cached)
-        train_label_datasets = [
-            tf.data.Dataset.zip((
-                tf.data.Dataset.from_tensor_slices(train_paths[idx]),
-                tf.data.Dataset.from_tensor_slices(train_labels[idx]))).cache(
-                    os.path.join(
-                        output_dir, "cache", str(label))).shuffle(20)  # len(idx)
-            for label, idx in train_label_idx.items()]
-
-        # create a dataset that samples balanced batches from the label datasets
-        background_train_ds = dataset.create_balanced_batch_dataset(
-            model_options["p"], model_options["k"], train_label_datasets)
-
-    # create standard training dataset pipeline (shuffle and load training set)
-    else:
-        shuffle_train = True
-        prefetch_train = True
-        num_repeat = model_options["num_augment"]
-
-        background_train_ds = tf.data.Dataset.zip((
-            tf.data.Dataset.from_tensor_slices(train_paths),
-            tf.data.Dataset.from_tensor_slices(train_labels)))
-
-    # load embedding TFRecords (faster here than before balanced sampling)
-    # batch to read files in parallel
-    background_train_ds = background_train_ds.batch(
-        model_options["batch_size"])
-
-    background_train_ds = background_train_ds.flat_map(
-        lambda paths, labels: tf.data.Dataset.zip((
-            tf.data.TFRecordDataset(
-                paths, compression_type="ZLIB", num_parallel_reads=8),
-            tf.data.Dataset.from_tensor_slices(labels))))
+    # create standard training dataset pipeline
+    background_train_ds = tf.data.Dataset.zip((
+        tf.data.TFRecordDataset(
+            train_speech_paths, compression_type="ZLIB"),
+        tf.data.TFRecordDataset(
+            train_image_paths, compression_type="ZLIB")))
 
     # map data preprocessing function across training data
     background_train_ds = background_train_ds.map(
-        lambda data, label: (preprocess_data_func(data), label),
-        num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        lambda speech_path, image_path: (
+            preprocess_data_func(speech_path), preprocess_data_func(image_path)),
+        num_parallel_calls=8)
 
-    # repeat augmentation, shuffle and batch train data
-    if num_repeat is not None:
-        background_train_ds = background_train_ds.repeat(num_repeat)
+    # shuffle and batch train data
+    background_train_ds = background_train_ds.repeat(-1)
 
-    if shuffle_train:
-        background_train_ds = background_train_ds.shuffle(1000)
+    background_train_ds = background_train_ds.shuffle(1000)
 
     background_train_ds = background_train_ds.batch(
         model_options["batch_size"])
 
-    if prefetch_train:
-        background_train_ds = background_train_ds.prefetch(
+    background_train_ds = background_train_ds.take(
+        model_options["num_batches"])
+
+    background_train_ds = background_train_ds.prefetch(
             tf.data.experimental.AUTOTUNE)
 
-    # create dev set pipeline for siamese validation
+    # create dev set pipeline for validation
     background_dev_ds = tf.data.Dataset.zip((
         tf.data.TFRecordDataset(
-            dev_paths, compression_type="ZLIB",
-            num_parallel_reads=8).map(preprocess_data_func),
-        tf.data.Dataset.from_tensor_slices(dev_labels)))
+            dev_speech_paths, compression_type="ZLIB"),
+        tf.data.TFRecordDataset(
+            dev_image_paths, compression_type="ZLIB")))
+
+    background_dev_ds = background_dev_ds.map(
+        lambda speech_path, image_path: (
+            preprocess_data_func(speech_path), preprocess_data_func(image_path)),
+        num_parallel_calls=8)
 
     background_dev_ds = background_dev_ds.batch(
         batch_size=model_options["batch_size"])
@@ -359,24 +332,38 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
     triplet_loss = get_training_objective(model_options)
 
     # get model input shape
-    for x_batch, _ in background_train_ds.take(1):
-        model_options["base_embed_size"] = int(
-            tf.shape(x_batch)[1].numpy())
+    for speech_batch, image_batch in background_train_ds.take(1):
+        model_options["audio_base_embed_size"] = int(
+            tf.shape(speech_batch)[1].numpy())
+        model_options["vision_base_embed_size"] = int(
+            tf.shape(image_batch)[1].numpy())
 
-        model_options["input_shape"] = [model_options["base_embed_size"]]
+        model_options["audio_input_shape"] = [
+            model_options["audio_base_embed_size"]]
+        model_options["vision_input_shape"] = [
+            model_options["vision_base_embed_size"]]
 
-    # load or create model
+    # load or create models
     if model_file is not None:
-        speech_network, train_state = model_utils.load_model(
+        join_network_model, train_state = model_utils.load_model(
             model_file=os.path.join(output_dir, model_file),
             model_step_file=os.path.join(output_dir, model_step_file),
-            loss=triplet_loss)
+            loss=get_training_objective(model_options))
+
+        speech_network = tf.keras.Model(
+            inputs=join_network_model.inputs[0],
+            outputs=join_network_model.outputs[0])
+
+        vision_network = tf.keras.Model(
+            inputs=join_network_model.inputs[1],
+            outputs=join_network_model.outputs[1])
 
         # get previous tracking variables
         initial_model = False
         global_step, model_epochs, _, best_val_score = train_state
     else:
         speech_network = create_speech_network(model_options)
+        vision_network = create_vision_network(model_options)
 
         # create tracking variables
         initial_model = True
@@ -395,46 +382,49 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
 
     if model_file is not None:
         logging.log(logging.INFO, "Restoring optimizer state")
-        optimizer = speech_network.optimizer
+        optimizer = join_network_model.optimizer
     else:
         optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
 
-    # compile model to store optimizer with model when saving
-    speech_network.compile(optimizer=optimizer, loss=triplet_loss)
+    # compile models to store optimizer with model when saving
+    join_network_model = tf.keras.Model(
+        inputs=[speech_network.input, vision_network.input],
+        outputs=[speech_network.output, vision_network.output])
+
+    # speech_network.compile(optimizer=optimizer, loss=triplet_loss)
+    join_network_model.compile(optimizer=optimizer, loss=triplet_loss)
 
     # create few-shot model from speech network for background training
-    speech_few_shot_model = base.BaseModel(speech_network, triplet_loss)
+    multimodal_model = base.WeaklySupervisedModel(
+        speech_network, vision_network, triplet_loss)
 
     # test model on one-shot validation task prior to training
     if model_options["one_shot_validation"]:
 
-        one_shot_dev_exp = flickr_speech.FlickrSpeech(
-            features="mfcc",
-            keywords_split="background_dev",
-            preprocess_func=get_data_preprocess_func(),
-            embed_dir=embed_dir,
-            speaker_mode=FLAGS.speaker_mode)
+        one_shot_dev_exp = flickr_multimodal.FlickrMultimodal(
+            features="mfcc", keywords_split="background_dev",
+            flickr8k_image_dir=os.path.join("data", "external", "flickr8k_images"),
+            speech_embed_dir=speech_embed_dir, image_embed_dir=image_embed_dir,
+            speech_preprocess_func=data_preprocess_func,
+            image_preprocess_func=data_preprocess_func,
+            speaker_mode=FLAGS.speaker_mode,
+            unseen_match_set=FLAGS.unseen_match_set)
 
-        embedding_model_func = create_embedding_model
-
-        classification = False
-        if FLAGS.classification:
-            assert FLAGS.fine_tune_steps is not None
-            classification = True
-
-        # create few-shot model from speech network for one-shot validation
+        # create few-shot model from speech and vision networks for one-shot validation
         if FLAGS.fine_tune_steps is not None:
             test_few_shot_model = create_fine_tune_model(
-                model_options, speech_few_shot_model.model, num_classes=FLAGS.L)
+                model_options, speech_network, vision_network)
         else:
-            test_few_shot_model = base.BaseModel(
-                speech_few_shot_model.model, None, mc_dropout=FLAGS.mc_dropout)
+            test_few_shot_model = base.WeaklySupervisedModel(
+                speech_network, vision_network, None,
+                mc_dropout=FLAGS.mc_dropout)
 
-        val_task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
-            one_shot_dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N, num_episodes=FLAGS.episodes,
-            k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric,
-            classification=classification, model=test_few_shot_model,
-            embedding_model_func=embedding_model_func,
+        val_task_accuracy, _, conf_interval_95 = experiment.test_multimodal_l_way_k_shot(
+            one_shot_dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N,
+            num_episodes=FLAGS.episodes, k_neighbours=FLAGS.k_neighbours,
+            metric=FLAGS.metric, direct_match=FLAGS.direct_match,
+            multimodal_model=test_few_shot_model,
+            multimodal_embedding_func=None, #create_embedding_model,
             fine_tune_steps=FLAGS.fine_tune_steps,
             fine_tune_lr=FLAGS.fine_tune_lr)
 
@@ -443,6 +433,7 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
             f"Base model: {FLAGS.L}-way {FLAGS.K}-shot accuracy after "
             f"{FLAGS.episodes} episodes: {val_task_accuracy:.3%} +- "
             f"{conf_interval_95*100:.4f}")
+
 
     # create training metrics
     loss_metric = tf.keras.metrics.Mean()
@@ -462,10 +453,10 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
         # train on epoch of training data
         step_pbar = tqdm(background_train_ds,
                          bar_format="{desc} [{elapsed},{rate_fmt}{postfix}]")
-        for step, (x_batch, y_batch) in enumerate(step_pbar):
+        for step, (speech_batch, image_batch) in enumerate(step_pbar):
 
-            loss_value, y_predict = speech_few_shot_model.train_step(
-                x_batch, y_batch, optimizer,
+            loss_value, y_speech, y_image = multimodal_model.train_step(
+                speech_batch, image_batch, optimizer,
                 clip_norm=model_options["gradient_clip_norm"])
 
             loss_metric.update_state(loss_value)
@@ -484,12 +475,15 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
                         "Train step loss", step_loss, step=global_step)
             global_step += 1
 
-        # validate siamese model
+        # validate multimodal model
         loss_metric.reset_states()
 
-        for x_batch, y_batch in background_dev_ds:
-            y_predict = speech_few_shot_model.predict(x_batch, training=False)
-            loss_value = speech_few_shot_model.loss(y_batch, y_predict)
+        for speech_batch, image_batch in background_dev_ds:
+            y_speech = multimodal_model.speech_model.predict(
+                speech_batch, training=False)
+            y_image = multimodal_model.vision_model.predict(
+                image_batch, training=False)
+            loss_value = multimodal_model.loss(y_speech, y_image)
 
             loss_metric.update_state(loss_value)
 
@@ -500,19 +494,18 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
 
             if FLAGS.fine_tune_steps is not None:
                 test_few_shot_model = create_fine_tune_model(
-                    model_options, speech_few_shot_model.model,
-                    num_classes=FLAGS.L)
+                    model_options, speech_network, vision_network)
             else:
-                test_few_shot_model = base.BaseModel(
-                    speech_few_shot_model.model, None,
+                test_few_shot_model = base.WeaklySupervisedModel(
+                    speech_network, vision_network, None,
                     mc_dropout=FLAGS.mc_dropout)
 
-            val_task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
+            val_task_accuracy, _, conf_interval_95 = experiment.test_multimodal_l_way_k_shot(
                 one_shot_dev_exp, FLAGS.K, FLAGS.L, n=FLAGS.N,
                 num_episodes=FLAGS.episodes, k_neighbours=FLAGS.k_neighbours,
-                metric=FLAGS.metric, classification=classification,
-                model=test_few_shot_model,
-                embedding_model_func=embedding_model_func,
+                metric=FLAGS.metric, direct_match=FLAGS.direct_match,
+                multimodal_model=test_few_shot_model,
+                multimodal_embedding_func=None, #create_embedding_model,
                 fine_tune_steps=FLAGS.fine_tune_steps,
                 fine_tune_lr=FLAGS.fine_tune_lr)
 
@@ -558,138 +551,90 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
                         val_task_accuracy, step=global_step)
 
         # store model and results
+        # model_utils.save_model(
+        #     multimodal_model.model_a.model, output_dir, epoch + 1, global_step,
+        #     val_metric, val_score, best_val_score, name="audio_model")
+        # model_utils.save_model(
+        #     multimodal_model.model_b.model, output_dir, epoch + 1, global_step,
+        #     val_metric, val_score, best_val_score, name="vision_model")
         model_utils.save_model(
-            speech_few_shot_model.model, output_dir, epoch + 1, global_step,
+            join_network_model, output_dir, epoch + 1, global_step,
             val_metric, val_score, best_val_score, name="model")
 
         if best_model:
             best_model = False
+            # model_utils.save_model(
+            #     multimodal_model.model_a.model, output_dir, epoch + 1, global_step,
+            #     val_metric, val_score, best_val_score, name="audio_best_model")
+            # model_utils.save_model(
+            #     multimodal_model.model_b.model, output_dir, epoch + 1, global_step,
+            #     val_metric, val_score, best_val_score, name="vision_best_model")
             model_utils.save_model(
-                speech_few_shot_model.model, output_dir, epoch + 1, global_step,
+                join_network_model, output_dir, epoch + 1, global_step,
                 val_metric, val_score, best_val_score, name="best_model")
 
 
-def embed(model_options, output_dir, model_file, model_step_file):
-    """Load siamese spoken word similarity model and extract embeddings."""
-
-    # load embeddings from dense layer of base model
-    embed_dir = os.path.join(model_options["base_dir"], "embed", "dense")
-
-    # load model
-    speech_network, _ = model_utils.load_model(
-        model_file=os.path.join(output_dir, model_file),
-        model_step_file=os.path.join(output_dir, model_step_file),
-        loss=get_training_objective(model_options))
-
-    # get model embedding model and data preprocessing
-    embedding_model = create_embedding_model(speech_network)
-    data_preprocess_func = get_data_preprocess_func()
-
-    # load Flickr Audio dataset and compute embeddings
-    one_shot_exp = flickr_speech.FlickrSpeech(
-        features="mfcc", keywords_split="one_shot_evaluation",
-        embed_dir=embed_dir)
-
-    background_train_exp = flickr_speech.FlickrSpeech(
-        features="mfcc", keywords_split="background_train", embed_dir=embed_dir)
-
-    background_dev_exp = flickr_speech.FlickrSpeech(
-        features="mfcc", keywords_split="background_dev", embed_dir=embed_dir)
-
-    subset_exp = {
-        "one_shot_evaluation": one_shot_exp,
-        "background_train": background_train_exp,
-        "background_dev": background_dev_exp,
-    }
-
-    for subset, exp in subset_exp.items():
-        embed_dir = os.path.join(
-            output_dir, "embed", "dense", "flickr_audio", subset)
-        file_io.check_create_dir(embed_dir)
-
-        unique_paths = np.unique(exp.embed_paths)
-
-        # batch base embeddings for faster embedding inference
-        path_ds = tf.data.Dataset.from_tensor_slices(unique_paths)
-        path_ds = path_ds.batch(model_options["batch_size"])
-        path_ds = path_ds.prefetch(tf.data.experimental.AUTOTUNE)
-
-        num_samples = int(
-            np.ceil(len(unique_paths) / model_options["batch_size"]))
-
-        start_time = time.time()
-        paths, embeddings = [], []
-        for path_batch in tqdm(path_ds, total=num_samples):
-            path_embeddings = embedding_model.predict(
-                data_preprocess_func(path_batch))
-
-            paths.extend(path_batch.numpy())
-            embeddings.extend(path_embeddings.numpy())
-        end_time = time.time()
-
-        logging.log(
-            logging.INFO,
-            f"Computed embeddings for Flickr Audio {subset} in "
-            f"{end_time - start_time:.4f} seconds")
-
-        # serialize and write embeddings to TFRecord files
-        for path, embedding in zip(paths, embeddings):
-            example_proto = dataset.embedding_to_example_protobuf(embedding)
-
-            path = path.decode("utf-8")
-            path = path.split(".tfrecord")[0]  # remove any ".tfrecord" ext
-            path = os.path.join(
-                embed_dir, f"{os.path.split(path)[1]}.tfrecord")
-
-            with tf.io.TFRecordWriter(path, options="ZLIB") as writer:
-                writer.write(example_proto.SerializeToString())
-
-        logging.log(logging.INFO, f"Embeddings stored at: {embed_dir}")
+    import pdb; pdb.set_trace()
 
 
 def test(model_options, output_dir, model_file, model_step_file):
-    """Load and test siamese spoken word similarity model for one-shot learning."""
+    """Load and test siamese audio-visual similarity model for one-shot learning."""
 
-    # load embeddings from dense layer of base model
-    embed_dir = os.path.join(model_options["base_dir"], "embed", "dense")
+    # load embeddings from (linear) dense layer of base speech and vision models
+    speech_embed_dir = os.path.join(
+        model_options["audio_base_dir"], "embed", "dense")
+
+    image_embed_dir = os.path.join(
+        model_options["vision_base_dir"], "embed", "dense")
 
     # load Flickr Audio one-shot experiment
-    one_shot_exp = flickr_speech.FlickrSpeech(
+    one_shot_exp = flickr_multimodal.FlickrMultimodal(
         features="mfcc", keywords_split="one_shot_evaluation",
-        embed_dir=embed_dir, preprocess_func=get_data_preprocess_func(),
-        speaker_mode=FLAGS.speaker_mode)
+        flickr8k_image_dir=os.path.join("data", "external", "flickr8k_images"),
+        speech_embed_dir=speech_embed_dir, image_embed_dir=image_embed_dir,
+        speech_preprocess_func=data_preprocess_func,
+        image_preprocess_func=data_preprocess_func,
+        speaker_mode=FLAGS.speaker_mode,
+        unseen_match_set=FLAGS.unseen_match_set)
 
-    # load model
-    speech_network, _ = model_utils.load_model(
+    # load joint audio-visual model
+    join_network_model, _ = model_utils.load_model(
         model_file=os.path.join(output_dir, model_file),
         model_step_file=os.path.join(output_dir, model_step_file),
         loss=get_training_objective(model_options))
 
-    embedding_model_func = create_embedding_model
+    speech_network = tf.keras.Model(
+        inputs=join_network_model.inputs[0],
+        outputs=join_network_model.outputs[0])
 
-    # create few-shot model from speech network for one-shot testing
+    vision_network = tf.keras.Model(
+        inputs=join_network_model.inputs[1],
+        outputs=join_network_model.outputs[1])
+
+    # create few-shot model from speech and vision networks for one-shot validation
     if FLAGS.fine_tune_steps is not None:
         test_few_shot_model = create_fine_tune_model(
-            model_options, speech_network, num_classes=FLAGS.L)
+            model_options, speech_network, vision_network)
     else:
-        test_few_shot_model = base.BaseModel(
-            speech_network, None, mc_dropout=FLAGS.mc_dropout)
-
-    classification = False
-    if FLAGS.classification:
-        assert FLAGS.fine_tune_steps is not None
-        classification = True
+        test_few_shot_model = base.WeaklySupervisedModel(
+            speech_network, vision_network, None,
+            mc_dropout=FLAGS.mc_dropout)
 
     logging.log(logging.INFO, "Created few-shot model from speech network")
-    test_few_shot_model.model.summary()
+    test_few_shot_model.speech_model.model.summary()
 
-    # test model on L-way K-shot task
-    task_accuracy, _, conf_interval_95 = experiment.test_l_way_k_shot(
+    logging.log(logging.INFO, "Created few-shot model from vision network")
+    test_few_shot_model.vision_model.model.summary()
+
+    # test model on L-way K-shot multimodal task
+    task_accuracy, _, conf_interval_95 = experiment.test_multimodal_l_way_k_shot(
         one_shot_exp, FLAGS.K, FLAGS.L, n=FLAGS.N, num_episodes=FLAGS.episodes,
         k_neighbours=FLAGS.k_neighbours, metric=FLAGS.metric,
-        classification=classification, model=test_few_shot_model,
-        embedding_model_func=embedding_model_func,
-        fine_tune_steps=FLAGS.fine_tune_steps, fine_tune_lr=FLAGS.fine_tune_lr)
+        direct_match=FLAGS.direct_match,
+        multimodal_model=test_few_shot_model,
+        multimodal_embedding_func=None, #create_embedding_model,
+        fine_tune_steps=FLAGS.fine_tune_steps,
+        fine_tune_lr=FLAGS.fine_tune_lr)
 
     logging.log(
         logging.INFO,
@@ -723,11 +668,18 @@ def main(argv):
         model_options = DEFAULT_OPTIONS
 
         # add flag options to model options
-        model_options["base_dir"] = FLAGS.base_dir
+        model_options["audio_base_dir"] = FLAGS.audio_base_dir
+        model_options["vision_base_dir"] = FLAGS.vision_base_dir
 
-        if FLAGS.base_dir is None:
+        if FLAGS.audio_base_dir is None:
             raise ValueError(
-                f"Target `{FLAGS.target}` requires --base_dir to be specified.")
+                f"Target `{FLAGS.target}` requires --audio_base_dir to be "
+                "specified.")
+
+        if FLAGS.vision_base_dir is None:
+            raise ValueError(
+                f"Target `{FLAGS.target}` requires --vision_base_dir to be "
+                "specified.")
 
         model_options["base_model"] = (
             "best_model" if FLAGS.load_best else "model")
@@ -740,10 +692,6 @@ def main(argv):
         model_file = "best_model.h5" if FLAGS.load_best else "model.h5"
         model_step_file = "best_model.step" if FLAGS.load_best else "model.step"
 
-        if FLAGS.base_dir is not None:
-            raise ValueError(
-                f"Flag --base_dir should not be set for target `{FLAGS.target}`.")
-
         if os.path.exists(os.path.join(output_dir, model_file)):
 
             model_found = True
@@ -752,8 +700,8 @@ def main(argv):
 
         elif FLAGS.target != "train":
             raise ValueError(
-                f"Target `{FLAGS.target}` specified but `{model_file}` not "
-                f"found in {output_dir}.")
+                f"Target `{FLAGS.target}` specified but "
+                f"`<audio/vision>_{model_file}` not found in {output_dir}.")
 
     # gather flag options
     flag_options = {}
@@ -785,7 +733,7 @@ def main(argv):
     elif FLAGS.target == "validate":  # TODO
         raise NotImplementedError
     elif FLAGS.target == "embed":
-        embed(model_options, output_dir, model_file, model_step_file)
+        raise NotImplementedError
     else:
         test(model_options, output_dir, model_file, model_step_file)
 
