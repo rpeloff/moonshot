@@ -45,11 +45,12 @@ DEFAULT_OPTIONS = {
     # training data
     "one_shot_validation": True,
     # data pipeline
-    "meta_batch_size": 8,
+    "meta_batch_size": 4,
     # audio-visual model (layers on top of base networks; final layers linear)
     "dense_units": [1024],
     "dropout_rate": 0.2,
     # triplet imposter objective
+    "blended": True,
     "margin": 1.,
     "metric": "cosine",  # or "euclidean", "cosine",
     # training
@@ -84,6 +85,7 @@ flags.DEFINE_string("vision_base_dir", None, "directory containing base vision n
 flags.DEFINE_string("audio_base_dir", None, "directory containing base audio network model")
 flags.DEFINE_bool("l2_norm", True, "L2-normalise embedding predictions (as done in training)")
 flags.DEFINE_bool("load_best", False, "load previous best model for resumed training or testing")
+flags.DEFINE_bool("load_initial", False, "load initial model (epoch 0) for training or testing")
 flags.DEFINE_bool("mc_dropout", False, "make embedding predictions with MC Dropout")
 # TODO optional train from scratch or fine-tune base model?
 # flags.DEFINE_bool("use_embeddings", False, "train on extracted embeddings from base model"
@@ -102,8 +104,12 @@ flags.DEFINE_bool("debug", False, "log with debug verbosity level")
 def get_training_objective(model_options):
     """Get training loss for ranking speech-image similarity with siamese triplets."""
 
-    triplet_loss = losses.triplet_imposter_random_sample_loss(
-        margin=model_options["margin"], metric=model_options["metric"])
+    if "blended" in model_options and model_options["blended"]:
+        triplet_loss = losses.blended_triplet_imposter_loss(
+            margin=model_options["margin"], metric=model_options["metric"])
+    else:
+        triplet_loss = losses.triplet_imposter_random_sample_loss(
+            margin=model_options["margin"], metric=model_options["metric"])
 
     return triplet_loss
 
@@ -386,7 +392,7 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
         multimodal_model=test_few_shot_model,
         multimodal_embedding_func=None, #create_embedding_model,
         optimizer=fine_tune_optimizer,
-        fine_tune_steps=FLAGS.fine_tune_steps,
+        fine_tune_steps=FLAGS.fine_tune_steps*2,
         fine_tune_lr=FLAGS.fine_tune_lr)
 
     logging.log(
@@ -404,6 +410,11 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
     if initial_model:
         file_io.write_json(
             os.path.join(output_dir, "model_options.json"), model_options)
+
+        # also store initial model for probing and things
+        model_utils.save_model(
+            join_network_model, output_dir, 0, 0, "not tested", 0., 0.,
+            name="initial_model")
 
     # train model
     step_pbar = tqdm(
@@ -492,7 +503,11 @@ def train(model_options, output_dir, model_file=None, model_step_file=None,
 
         global_step += 1
 
-    import pdb; pdb.set_trace()
+        if global_step > model_options["meta_steps"]:
+            logging.log(
+                logging.INFO,
+                f"Training complete after {global_step-1:03d} steps")
+            break
 
 
 def test(model_options, output_dir, model_file, model_step_file):
@@ -606,9 +621,16 @@ def main(argv):
     else:
         output_dir = FLAGS.output_dir
 
-        # load current or best model
-        model_file = "best_model.h5" if FLAGS.load_best else "model.h5"
-        model_step_file = "best_model.step" if FLAGS.load_best else "model.step"
+        # load current, initial or best model
+        if FLAGS.load_best:
+            model_file = "best_model.h5"
+            model_step_file = "best_model.step"
+        elif FLAGS.load_initial:
+            model_file = "initial_model.h5"
+            model_step_file = "initial_model.step"
+        else:
+            model_file = "model.h5"
+            model_step_file = "model.step"
 
         if os.path.exists(os.path.join(output_dir, model_file)):
 

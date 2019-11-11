@@ -45,12 +45,13 @@ DEFAULT_OPTIONS = {
     # training data
     "one_shot_validation": True,
     # data pipeline
-    "batch_size": 512,
+    "batch_size": 256,
     "num_batches": 2500,
     # audio-visual model (layers on top of base networks; final layers linear)
     "dense_units": [1024], #[2048, 2048, 2048, 1024],
     "dropout_rate": 0.2,
     # triplet imposter objective
+    "blended": True,
     "margin": 1.,
     "metric": "cosine",  # or "euclidean", "cosine",
     # training
@@ -101,8 +102,12 @@ flags.DEFINE_bool("debug", False, "log with debug verbosity level")
 def get_training_objective(model_options):
     """Get training loss for ranking speech-image similarity with siamese triplets."""
 
-    triplet_loss = losses.triplet_imposter_random_sample_loss(
-        margin=model_options["margin"], metric=model_options["metric"])
+    if "blended" in model_options and model_options["blended"]:
+        triplet_loss = losses.blended_triplet_imposter_loss(
+            margin=model_options["margin"], metric=model_options["metric"])
+    else:
+        triplet_loss = losses.triplet_imposter_random_sample_loss(
+            margin=model_options["margin"], metric=model_options["metric"])
 
     return triplet_loss
 

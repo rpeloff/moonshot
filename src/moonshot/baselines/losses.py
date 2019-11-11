@@ -112,6 +112,24 @@ def cosine_pairwise_distance(x):
     return pairwise_distances
 
 
+def cosine_collection_distance(x1, x2):
+    """Computes the cosine distance between each pair in two matrices.
+
+    Note: `x1` and `x2` is assumed to be unit-normalised.
+    """
+    x1 = tf.cast(x1, dtype=tf.float32)
+    x2 = tf.cast(x2, dtype=tf.float32)
+
+    # dot product between rows of `x1` and columns of `x2` transpose
+    cos_thetas = tf.linalg.matmul(x1, x2, transpose_b=True)
+    pairwise_distances = 1 - cos_thetas
+
+    # deal with numerical inaccuracies setting small negatives to zero
+    pairwise_distances = tf.maximum(pairwise_distances, 0.0)
+
+    return pairwise_distances
+
+
 def euclidean_distance(x1, x2, squared=False):
     """Compute the cosine distance between two matrices."""
     x1 = tf.cast(x1, dtype=tf.float32)
@@ -186,6 +204,40 @@ def euclidean_pairwise_distance(x, squared=False):
     mask_offdiagonals = tf.ones_like(pairwise_distances) - tf.linalg.diag(
         tf.ones([num_data]))
     pairwise_distances = tf.multiply(pairwise_distances, mask_offdiagonals)
+    return pairwise_distances
+
+
+def euclidean_collection_distance(x1, x2, squared=False):
+    """Compute the euclidean distance between each pair in two matrices..
+
+    See `euclidean_pairwise_distance`.
+    """
+    pairwise_distances_squared = tf.math.add(
+        tf.math.reduce_sum(tf.math.square(x1), axis=[1], keepdims=True),
+        tf.math.reduce_sum(
+            tf.math.square(tf.transpose(x2)),
+            axis=[0],
+            keepdims=True)) - 2.0 * tf.matmul(x1, tf.transpose(x2))
+
+    # Deal with numerical inaccuracies. Set small negatives to zero.
+    pairwise_distances_squared = tf.maximum(
+        pairwise_distances_squared, 0.0)
+    # Get the mask where the zero distances are at.
+    error_mask = tf.less_equal(pairwise_distances_squared, 0.0)
+
+    # Optionally take the sqrt.
+    if squared:
+        pairwise_distances = pairwise_distances_squared
+    else:
+        pairwise_distances = tf.math.sqrt(
+            pairwise_distances_squared +
+            tf.cast(error_mask, tf.float32) * 1e-16)
+
+    # Undo conditionally adding 1e-16.
+    pairwise_distances = tf.math.multiply(
+        pairwise_distances,
+        tf.cast(tf.math.logical_not(error_mask), tf.float32))
+
     return pairwise_distances
 
 
@@ -416,7 +468,8 @@ def triplet_imposter_random_sample_loss(margin=1.0, metric="cosine"):
     return loss
 
 
-def triplet_imposter_semi_hard_loss(margin=1.0, metric="cosine"):
+def triplet_imposter_semi_hard_loss(margin=1.0, metric="cosine",
+                                    reduce_loss=True):
     r"""Triplet margin ranking loss with semi-hard mining of imposters.
 
     TODO
@@ -429,6 +482,122 @@ def triplet_imposter_semi_hard_loss(margin=1.0, metric="cosine"):
     def loss(anchor_embeddings, positive_embeddings):
         """TODO
         """
-        raise NotImplementedError
+        anchor_shape = tf.shape(anchor_embeddings)
+        positive_shape = tf.shape(positive_embeddings)
+
+        # should have same dimensions
+        assert anchor_shape.shape == positive_shape.shape
+
+        anchor_embeddings = tf.cast(anchor_embeddings, tf.float32)
+        anchor_embeddings = tf.nn.l2_normalize(anchor_embeddings, axis=1)
+
+        positive_embeddings = tf.cast(positive_embeddings, tf.float32)
+        positive_embeddings = tf.nn.l2_normalize(positive_embeddings, axis=1)
+
+        # build pairwise distance matrix between anchor and positive embeddings
+        if metric == "cosine":
+            pdist_matrix = cosine_collection_distance(
+                anchor_embeddings, positive_embeddings)
+        elif metric == "euclidean":
+            pdist_matrix = euclidean_collection_distance(
+                anchor_embeddings, positive_embeddings, squared=False)
+        elif metric == "squared_euclidean":
+            pdist_matrix = euclidean_collection_distance(
+                anchor_embeddings, positive_embeddings, squared=True)
+
+        # set "labels" as indices of each pair in the batch
+        labels = tf.range(anchor_shape[0], dtype=tf.int32)
+
+        # reshape [batch_size] labeld tensor to a [batch_size, 1] labels tensor
+        lshape = tf.shape(labels)
+        if lshape.shape == 1:
+            labels = tf.reshape(labels, [lshape[0], 1])
+
+        batch_size = tf.size(labels)
+
+        # build pairwise binary adjacency matrix
+        adjacency = tf.equal(labels, tf.transpose(labels))
+        # invert so we can select negatives only
+        adjacency_not = tf.logical_not(adjacency)
+
+        # for a given pair distance, find other pair distances in
+        # same row (i.e. with same anchor) > the pair distance
+        # (these are the negatives outsides for the anchor)
+        pdist_matrix_tile = tf.tile(pdist_matrix, [batch_size, 1])
+        mask = tf.logical_and(
+            tf.tile(adjacency_not, [batch_size, 1]),
+            tf.math.greater(
+                pdist_matrix_tile, tf.reshape(
+                    tf.transpose(pdist_matrix), [-1, 1])))
+
+        adjacency_not = tf.cast(adjacency_not, dtype=tf.float32)
+        mask = tf.cast(mask, dtype=tf.float32)
+
+        # get mask which determines if a pair distance has negatives outside
+        mask_final = tf.reshape(
+            tf.math.greater(
+                tf.math.reduce_sum(mask, 1, keepdims=True),
+                0.0), [batch_size, batch_size])
+        mask_final = tf.transpose(mask_final)
+
+        # negatives_outside: smallest D_an where D_an > D_ap
+        negatives_outside = tf.reshape(
+            masked_minimum(pdist_matrix_tile, mask), [batch_size, batch_size])
+        negatives_outside = tf.transpose(negatives_outside)
+
+        # negatives_inside: largest D_an
+        negatives_inside = tf.tile(
+            masked_maximum(pdist_matrix, adjacency_not), [1, batch_size])
+
+        semi_hard_negatives = tf.where(
+            mask_final, negatives_outside, negatives_inside)
+
+        loss_mat = tf.math.add(margin, pdist_matrix - semi_hard_negatives)
+
+        # take all positive pairs which exist ONLY the diagonal
+        mask_positives = tf.cast(adjacency, dtype=tf.float32)
+        num_positives = tf.math.reduce_sum(mask_positives)
+
+        triplet_loss = tf.math.maximum(
+            tf.math.multiply(loss_mat, mask_positives), y=0.0)
+
+        if reduce_loss:
+            triplet_loss = tf.math.truediv(
+                tf.math.reduce_sum(triplet_loss), num_positives)
+
+        return triplet_loss
+
+    return loss
+
+
+def blended_triplet_imposter_loss(margin=1.0, metric="cosine"):
+
+    rand_sample_triplet_loss = triplet_imposter_semi_hard_loss(
+        margin=margin, metric=metric)
+
+    semi_hard_negative_triplet_loss = triplet_imposter_semi_hard_loss(
+        margin=margin, metric=metric, reduce_loss=False)
+
+    def loss(speech_embeddings, image_embeddings):
+
+        # compute triplet loss with random sampling of speech & image negatives
+        loss_s = rand_sample_triplet_loss(speech_embeddings, image_embeddings)
+
+        # compute semi-hard negative mining triplet loss with speech as anchors
+        # and selecting image imposters
+        loss_h = semi_hard_negative_triplet_loss(
+            speech_embeddings, image_embeddings)
+
+        # compute semi-hard negative mining triplet loss with images as anchors
+        # and selecting speech imposters
+        loss_h += semi_hard_negative_triplet_loss(
+            image_embeddings, speech_embeddings)
+
+        batch_size = tf.shape(speech_embeddings)[0]
+        loss_h = tf.math.truediv(
+            tf.math.reduce_sum(loss_h), tf.cast(batch_size, tf.float32))
+
+        # return blended loss
+        return loss_s + loss_h
 
     return loss
